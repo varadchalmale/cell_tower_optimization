@@ -1,0 +1,30 @@
+project:
+  name: "Nagpur_Cell_Tower_Planning"
+  seed: 42
+  crs: "EPSG:32644"  # UTM Zone 44N for Nagpur region
+
+optimization:
+  num_towers: 50
+  grid_resolution: 150  # meters
+  population_per_user: 10 # 1 out of 10 people is an active user at peak
+  traffic_per_user_mbps: 2.5 # Minimum demand per active user
+  min_tower_distance: 300 # meters
+
+rf_params:
+  frequency_mhz: 2100
+  bandwidth_mhz: 20
+  transmit_power_dbm: 43 # 20W
+  antenna_height_m: 30
+  receiver_height_m: 1.5
+  propagation_model: "COST231" # either "COST231" or "3GPP_UMa"
+
+nsga2:
+  pop_size: 100
+  n_gen: 50
+
+paths:
+  boundary_shp: "Data/raw/gadm41_IND_2.shp"
+  dem_tif: "Data/raw/srtm_dem.tif"
+  pop_tif: "Data/raw/population.tif"
+  airtel_coverage: "Data/raw/airtel_coverage.shp"
+  output_dir: "outputs"

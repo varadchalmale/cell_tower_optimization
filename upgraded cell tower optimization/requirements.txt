@@ -1,0 +1,15 @@
+geopandas
+rasterio
+shapely
+pyproj
+osmnx
+numpy
+pandas
+scipy
+scikit-learn
+pymoo
+matplotlib
+folium
+seaborn
+tqdm
+pyyaml
