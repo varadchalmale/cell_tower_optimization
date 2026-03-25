@@ -1,0 +1,15 @@
+numpy
+pandas
+geopandas
+rasterio
+matplotlib
+seaborn
+scikit-learn
+joblib
+scipy
+tqdm
+folium
+branca
+pyproj
+osmnx
+contextily

@@ -1,0 +1,17 @@
+name: cell_tower_opt
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - geopandas
+  - rasterio
+  - osmnx
+  - folium
+  - shapely
+  - scipy
+  - numpy
+  - pandas
+  - matplotlib
+  - jupyterlab
+  - pip
