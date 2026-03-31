@@ -142,17 +142,22 @@ class DataPreprocessor:
                         intersection = poly.intersection(buf)
                         bldg_area += intersection.area
             
-            # Use deterministic pseudo-random logic if file doesn't exist so debugging is reliable
+            # Synthetic population: Gaussian urban density centred on Nagpur city core
+            # (UTM 32644 approx: 290000E, 2347000N) with suburban decay.
+            # Uses building density and road presence as secondary multipliers so that
+            # OSM-derived land-use drives spatial variation rather than an arbitrary wave.
             if os.path.exists(pop_raster_path):
-                pop_val = 100 # Mock placeholder for actual rasterio read
+                pop_val = 100  # placeholder — replace with rasterio.read when real data available
             else:
-                # Deterministic based on coordinates
-                pop_val = np.maximum(0, 500 * np.sin(pt.x/1000) * np.cos(pt.y/1000) + 500)
-                
+                NAGPUR_X, NAGPUR_Y = 290000, 2347000   # city centre in EPSG:32644
+                dist_km = np.sqrt((pt.x - NAGPUR_X)**2 + (pt.y - NAGPUR_Y)**2) / 1000.0
+                # Peak ~1200 people/cell in city core, falls off with 8 km standard deviation
+                pop_val = float(np.maximum(10, 1200 * np.exp(-0.5 * (dist_km / 8.0)**2)))
+
             if os.path.exists(dem_raster_path):
-                dem_val = 300 # Mock placeholder
+                dem_val = 300  # placeholder
             else:
-                dem_val = 300 + 50 * np.sin(pt.x/5000)
+                dem_val = 300 + 50 * np.sin(pt.x / 5000)
                 
             bldg_ratio = bldg_area / max(1, buf.area)
             if bldg_ratio > 0.15:
