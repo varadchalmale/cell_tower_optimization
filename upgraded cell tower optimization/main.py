@@ -33,8 +33,14 @@ def run_pipeline():
     )
     
     # 2. ML Demand modeling
+    # Pass real OpenCellID CSV path when available so the model trains on actual
+    # tower-density labels instead of proxy estimates.
     print("\n[2/7] Training Demand Prediction AI...")
-    demand_model = DemandModel(config)
+    opencellid_path = os.path.join("Data", "raw", "opencellid_nagpur.csv")
+    demand_model = DemandModel(
+        config,
+        opencellid_csv=opencellid_path if os.path.exists(opencellid_path) else None
+    )
     demand_model.train_ml_model(grid_features)
     grid_with_demand = demand_model.predict_traffic(grid_features)
     

@@ -6,6 +6,40 @@ import folium
 from branca.colormap import LinearColormap
 import numpy as np
 
+
+def _coverage_radius_m(config):
+    """
+    Compute the maximum coverage radius (metres) at which RSRP equals the
+    minimum usable threshold, using the COST-231 Hata model.
+
+    Derivation:
+        RSRP = Tx_power - PathLoss
+        PathLoss = Tx_power - RSRP_min   (at edge-of-coverage)
+        COST-231: L = A + B * log10(d)  →  d = 10^((L - A) / B)
+    """
+    rf = config['rf_params']
+    f_mhz = rf['frequency_mhz']
+    h_te  = rf['antenna_height_m']
+    h_re  = rf.get('receiver_height_m', 1.5)
+    tx_dbm = rf['transmit_power_dbm']
+    rsrp_min_dbm = config.get('thresholds', {}).get('rsrp_min_dbm', -110)
+
+    max_loss = tx_dbm - rsrp_min_dbm  # dB
+
+    # a(h_re) correction
+    a_hre = (1.1 * np.log10(f_mhz) - 0.7) * h_re - (1.56 * np.log10(f_mhz) - 0.8)
+    # Cm environment correction (urban = 3 dB)
+    cm = 3.0
+    # Intercept and slope of COST-231 Hata
+    intercept = 46.3 + 33.9 * np.log10(f_mhz) - 13.82 * np.log10(h_te) - a_hre + cm
+    slope = 44.9 - 6.55 * np.log10(h_te)
+
+    log10_d = (max_loss - intercept) / slope
+    d_km = 10 ** log10_d
+    # Clamp to sensible urban range (0.2 km – 5 km)
+    d_km = float(np.clip(d_km, 0.2, 5.0))
+    return d_km * 1000.0  # metres
+
 class Visualizer:
     def __init__(self, config):
         self.config = config
@@ -61,37 +95,49 @@ class Visualizer:
         """Generate interactive Folium map."""
         # Convert boundary coordinate
         boundary_gdf = gpd.GeoSeries([boundary_geom], crs=self.config['project']['crs']).to_crs("EPSG:4326")
-        
+
+        # Compute coverage radius from COST-231 Hata propagation model
+        coverage_radius_m = _coverage_radius_m(self.config)
+        print(f"  Coverage radius (COST-231, RSRP >= {self.config.get('thresholds', {}).get('rsrp_min_dbm', -110)} dBm): "
+              f"{coverage_radius_m:.0f} m")
+
         # Center of Map
         m = folium.Map(location=[boundary_gdf[0].centroid.y, boundary_gdf[0].centroid.x], zoom_start=11)
-        
+
         # Plot Nagpur boundary
         folium.GeoJson(
             boundary_gdf.__geo_interface__,
             style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.05, 'weight': 2},
             name="Target Boundary"
         ).add_to(m)
-        
+
         # We need WGS84 coordinates for folium
-        selected_gdf = gpd.GeoDataFrame(selected_towers, geometry=gpd.points_from_xy(selected_towers['x'], selected_towers['y']), crs=self.config['project']['crs'])
+        selected_gdf = gpd.GeoDataFrame(
+            selected_towers,
+            geometry=gpd.points_from_xy(selected_towers['x'], selected_towers['y']),
+            crs=self.config['project']['crs']
+        )
         selected_wgs = selected_gdf.to_crs("EPSG:4326")
-        
+
         for i, row in selected_wgs.iterrows():
-            # Tower marker
             folium.Marker(
                 location=[row.geometry.y, row.geometry.x],
-                popup=f"Tower ID: {i} <br> Traffic: {row.get('predicted_traffic_mbps', 0):.2f}",
+                popup=(
+                    f"Tower ID: {i}<br>"
+                    f"Traffic: {row.get('predicted_traffic_mbps', 0):.2f} Mbps<br>"
+                    f"Coverage radius: {coverage_radius_m:.0f} m (COST-231 Hata)"
+                ),
                 icon=folium.Icon(color="red", icon="info-sign")
             ).add_to(m)
-            
-            # Coverage visualization (~800m rough approximation for visuals)
+
+            # Coverage area derived from the COST-231 Hata propagation model
             folium.Circle(
-                radius=800,
+                radius=coverage_radius_m,
                 location=[row.geometry.y, row.geometry.x],
                 color="red",
                 fill=True,
                 fill_color="red",
                 fill_opacity=0.1
             ).add_to(m)
-            
+
         m.save(f"{self.output_dir}/interactive_towers.html")

@@ -1,67 +1,162 @@
-# AI-Driven 4G/5G Cell Tower Planning System
+# AI-Driven Cell Tower Placement Optimization
 
-An AI-driven, capacity-aware, multi-objective automated cellular network planning and validation framework using real geospatial data.
+**Problem**: Telecom operators spend weeks and significant capital sending field engineers to survey
+areas for new cell tower sites — a process that is slow, expensive, and dependent on individual
+expertise.
 
-## Project Overview
+**Solution**: An end-to-end AI system that ingests publicly available geospatial data (population,
+terrain, land use, road networks) and automatically recommends optimal tower placements in minutes,
+using Multi-Objective Genetic Algorithm optimization guided by a Random Forest demand model.
 
-This is a complete, research-grade, academic cellular network planning tool built from scratch in Python. It evaluates real geospatial terrain, models user traffic demand dynamically with Machine Learning, and determines the most optimal locations for new cell sites using a Multi-Objective Genetic Algorithm (NSGA-II).
+**Core result**: The system recommends fewer towers than are currently deployed in Nagpur while
+maintaining comparable population coverage — demonstrating that systematic AI-driven planning can
+reduce infrastructure cost without degrading service quality.
 
-### Core Features:
-1.  **Data Preprocessing**: Fetch, clip, and reproject DEM, Population Raster, and OSM geometry (Buildings, Roads, Land Usage).
-2.  **Machine Learning Demand Model**: Trains a Random Forest on extracted grid density metrics to accurately forecast Mbps traffic expectations per cell block.
-3.  **Radio Propagation**: Implements 3GPP UMa and COST-231 Hata pathloss models inclusive of terrain diffraction penalties.
-4.  **Capacity Analysis**: Full end-to-end translation of received signal strength (RSRP) into SINR, Shannon spectral efficiency, physical throughput, and cell load balancing.
-5.  **Multi-Objective Optimization**: Employs NSGA-II via `pymoo` to construct a Pareto frontier balancing:
-    *   Maximum Demand Coverage (Population weighted)
-    *   Maximum Network Capacity sum
-    *   Minimum Deployment Expenditure (Land type & proximity to roads)
-6.  **Scientific Validation**: Automates validation scoring (Intersection-Over-Union) against current existing Airtel coverages.
+---
+
+## Technical Approach
+
+```
+[OpenStreetMap / WorldPop / GADM / DEM]
+              |
+              v
+    [Feature Engineering]         <- population, clutter, slope, POI density
+              |
+              v
+   [Random Forest Demand Model]   <- trained on OpenCellID tower density (real) or
+              |                      population+OSM proxy (clearly disclosed)
+              v
+  [Candidate Site Generation]     <- heuristic scoring + minimum separation filter
+              |
+              v
+     [NSGA-II Optimizer]          <- 3 objectives: coverage, capacity, cost
+              |                      produces Pareto frontier, not a single forced solution
+              v
+  [Folium Interactive Map]        <- coverage circles from COST-231 Hata model
+              |
+              v
+  [Validation vs OpenCellID]      <- Hungarian bipartite matching, KDTree, IoU
+```
+
+### Algorithms & Models
+
+| Component | Method | Why |
+|-----------|--------|-----|
+| Demand prediction | Random Forest (100 trees) | Handles non-linear spatial interactions between population, roads, and land use |
+| Propagation | COST-231 Hata (urban) | Industry-standard ITU model for 1.8–2.1 GHz macro cells; more realistic than FSPL |
+| Capacity | Shannon + SINR matrix | Accounts for inter-cell interference, not just binary coverage |
+| Optimization | NSGA-II (pymoo) | Multi-objective; avoids arbitrary single-objective weighting |
+| Validation | Hungarian algorithm + KDTree | 1-to-1 bipartite matching against real OpenCellID ground truth |
+
+### Key Parameters (config.yaml)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Frequency | 2100 MHz | Standard 4G Band 1 |
+| Tx Power | 43 dBm (20W) | Typical macro BTS |
+| Antenna height | 30 m | Urban tower standard |
+| RSRP threshold | -110 dBm | 3GPP TS 36.133 |
+| Min tower spacing | 300 m | Co-channel interference constraint |
+
+---
+
+## Data Sources
+
+| Data | Source | Purpose |
+|------|--------|---------|
+| Administrative boundary | GADM v4.1 | Nagpur district extent |
+| Population density | WorldPop / synthetic fallback | Demand estimation |
+| Elevation (DEM) | SRTM 30m | Terrain slope, propagation correction |
+| Buildings, roads, POIs | OpenStreetMap (osmnx) | Land use features |
+| LTE towers (validation) | OpenCellID (user-provided) | Ground-truth evaluation |
+| Existing coverage | Airtel ArcGIS API | IoU coverage comparison |
+
+**To run with real data**: Download the India OpenCellID CSV from https://opencellid.org,
+filter for MCC=404, radio=LTE, and save to `Data/raw/opencellid_nagpur.csv`.
 
 ---
 
 ## Directory Structure
 
-```text
-Cell_tower_optimization_2/
-├── requirements.txt            # All dependencies
-├── run_pipeline.sh             # Bash script to run end-to-end
-├── main.py                     # Entry point for the framework
-├── src/
-│   ├── config/
-│   │   └── config.yaml         # Fully configurable params, no hardcoding
-│   ├── data/
-│   │   └── preprocessing.py    # GADM extraction, OSM fetched features
-│   ├── models/
-│   │   ├── demand.py           # Machine learning component and hotspots
-│   │   ├── propagation.py      # COST-231 and 3GPP RF propagation physics
-│   │   └── capacity.py         # SINR / Load mapping models
-│   ├── optimization/
-│   │   ├── candidates.py       # Heuristic-based valid tower selection
-│   │   └── nsga2.py            # The Genetic Algorithm formulation
-│   ├── validation/
-│   │   └── validate.py         # True Positive / False Positive validation maps
-│   └── visualization/
-│       └── visualize.py        # Heatmap Generation, Folium interactive Maps
-└── Data/
-    └── raw/                    # Automatically generated. Place real geospatial assets here if available.
 ```
+upgraded cell tower optimization/
+├── main.py                     # Single entry point
+├── run_pipeline.sh             # Bash automation
+├── requirements.txt            # Dependencies
+├── src/
+│   ├── config/config.yaml      # All parameters — change here, not in code
+│   ├── data/preprocessing.py   # GADM, OSM, raster ingestion
+│   ├── models/
+│   │   ├── demand.py           # RF demand model (OpenCellID labels preferred)
+│   │   ├── propagation.py      # COST-231 Hata + 3GPP UMa
+│   │   └── capacity.py         # SINR / Shannon capacity / cell load
+│   ├── optimization/
+│   │   ├── candidates.py       # Heuristic candidate filtering
+│   │   └── nsga2.py            # NSGA-II multi-objective optimizer (pymoo)
+│   ├── validation/validate.py  # IoU vs Airtel coverage map
+│   └── visualization/
+│       └── visualize.py        # Heatmaps, Pareto plot, Folium map
+└── Data/raw/                   # Place input rasters and shapefiles here
+```
+
+---
 
 ## Setup & Running
 
-It is recommended to run this project inside a fresh virtual environment. The supplied shell script automates everything from dependency loading to module execution.
+```bash
+# 1. Install dependencies (Python 3.10 recommended)
+pip install -r requirements.txt
 
-1. **Verify Configs**: In `src/config/config.yaml`, ensure tuning matches required memory and compute scopes. Defaults are configured for rapid testing over 50 towers in Nagpur.
-2. **Execution**:
-   ```bash
-   chmod +x run_pipeline.sh
-   ./run_pipeline.sh
-   ```
+# 2. (Optional but recommended) Add real OpenCellID data
+#    Download from opencellid.org → filter MCC=404, LTE → save as:
+cp your_download.csv Data/raw/opencellid_nagpur.csv
 
-*The system functions out-of-the-box. If the original raster layers (e.g. `gadm41_IND_2.shp`, `srtm_dem.tif`) are missing, the AI framework automatically fails over to synthesized proxy geo-bounds built using procedural math mimicking standard Indian districts.*
+# 3. Run the full pipeline
+python main.py
 
-## Scientific Output & Artifacts
-The framework outputs direct analytical artifacts to `outputs/`: 
-- **`predicted_traffic_mbps_heatmap.png`**: Heatmap displaying dynamic spatial load forecasting.
-- **`pareto_frontier.png`**: The trade-off locus between budget, coverage, and spectral load.
-- **`sites_map.png`**: Global plot mapping chosen Pareto optimal towers vs candidate backdrop.
-- **Folium Map (`interactive_towers.html`)**: Interactive web layout outlining geographic placement points.
+# OR use the shell script (handles venv activation)
+chmod +x run_pipeline.sh && ./run_pipeline.sh
+```
+
+For an interactive walkthrough, open `../demo.ipynb` (runs in ~10 minutes).
+
+---
+
+## Outputs
+
+All artifacts are saved to `outputs/`:
+
+| File | Description |
+|------|-------------|
+| `interactive_towers.html` | Folium map — demand heatmap + tower markers with COST-231 coverage radius |
+| `pareto_frontier.png` | Trade-off surface: coverage vs capacity vs deployment cost |
+| `predicted_traffic_mbps_heatmap.png` | Spatial demand forecast |
+| `sites_map.png` | Candidate vs selected towers overlaid on demand map |
+
+---
+
+## Limitations & Honest Assumptions
+
+- **Demand labels**: When real traffic measurements are unavailable, the model uses OpenCellID
+  tower density as a proxy (higher existing tower density → historically higher demand). If
+  OpenCellID data is absent, it falls back to a population+OSM infrastructure proxy. Neither is
+  measured traffic data; both are reasonable engineering approximations.
+- **Propagation**: COST-231 Hata is a statistical model valid for 150 MHz – 2 GHz, 1–20 km range.
+  It does not model individual building reflections or small-scale fading.
+- **Interference**: Inter-cell interference is simplified to a linear sum of received powers. Full
+  MIMO beam management is not modeled.
+- **Zoning / ROW**: Real-world site acquisition constraints (building permits, right-of-way,
+  property access) are not included.
+
+---
+
+## References
+
+- Deb, K. et al. (2002). "A Fast and Elitist Multi-Objective Genetic Algorithm: NSGA-II." *IEEE
+  Transactions on Evolutionary Computation*, 6(2), 182–197.
+- COST 231 Final Report (1999). "Digital Mobile Radio: COST 231 View on the Evolution Towards
+  3rd Generation Systems." European Commission / COST Telecommunications.
+- Rappaport, T.S. (2002). *Wireless Communications: Principles and Practice*, 2nd ed. Prentice Hall.
+- 3GPP TS 36.133 (2020). "Requirements for support of radio resource management (LTE)."
+- Blank, J. & Deb, K. (2020). "pymoo: Multi-Objective Optimization in Python." *IEEE Access*, 8,
+  89497–89509.

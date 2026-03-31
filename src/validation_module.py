@@ -317,38 +317,23 @@ if __name__ == '__main__':
     predicted_path = os.path.join(Config.RESULTS_PATH, 'best_solution_upgraded.json')
     demand_path = os.path.join(Config.PROCESSED_DATA_PATH, 'feature_demand_score.tif')
     opencellid_path = os.path.join(Config.RAW_DATA_PATH, 'opencellid_nagpur.csv')
-    
-    # Generate HIGH-PRECISION realistic mock CSV for presentation readiness if none exists
+
     if not os.path.exists(opencellid_path):
-        print(f"Warning: Real Dataset missing. Generating Highly-Accurate scaled mock data strictly linked to AI predictions to allow presentation workflow...")
-        with rasterio.open(demand_path) as src:
-            transform = src.transform
-            crs = src.crs
+        print(
+            "\n[ERROR] Real OpenCellID data not found.\n"
+            f"  Expected path : {opencellid_path}\n"
+            "\n"
+            "  To obtain it:\n"
+            "  1. Register (free) at https://opencellid.org/\n"
+            "  2. Download the India dataset (MCC = 404 or 405)\n"
+            "  3. Filter rows where 'radio' == 'LTE' and coordinates fall within\n"
+            "     Nagpur district (approx. lat 20.8–21.5, lon 78.7–79.5)\n"
+            "  4. Save as 'opencellid_nagpur.csv' with columns: radio, lon, lat\n"
+            "\n"
+            "  Validation cannot run without real ground-truth data."
+        )
+        raise FileNotFoundError(opencellid_path)
 
-        import pyproj
-        transformer = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-
-        with open(predicted_path, 'r') as f:
-            pred_pixels = json.load(f)
-
-        mock_x, mock_y = [], []
-        # Add 30-70 meter slight perturbations to prove the 1-to-1 exact matching mathematically
-        # rather than just rendering exactly 0.0 error which looks fake.
-        for y, x in pred_pixels:
-            lon, lat = xy(transform, y, x)
-            mock_x.append(lon + np.random.normal(0, 45)) 
-            mock_y.append(lat + np.random.normal(0, 45))
-            
-        wgs_lons, wgs_lats = transformer.transform(mock_x, mock_y)
-
-        df_mock = pd.DataFrame({
-            'radio': ['LTE']*len(wgs_lons),
-            'lon': wgs_lons,
-            'lat': wgs_lats
-        })
-        df_mock.to_csv(opencellid_path, index=False)
-        print("Mock OpenCellID perfectly integrated at 1:1 scale.")
-    
     val_mod = ValidationModule(opencellid_path, predicted_path, demand_path, Config.RESULTS_PATH)
     metrics = val_mod.run_validation()
     val_mod.generate_report(metrics)
