@@ -91,6 +91,56 @@ class CoverageValidator:
             print(f"Validation failed: {e}")
             return self._dummy_validation()
 
+    def validate_with_poly(self, simulated_coverage_poly, airtel_poly):
+        """
+        Same as validate() but accepts an already-loaded shapely Polygon,
+        avoiding a second file read when airtel_poly is available from Stage 4.5.
+        """
+        try:
+            intersection = simulated_coverage_poly.intersection(airtel_poly).area
+            union        = simulated_coverage_poly.union(airtel_poly).area
+            iou          = intersection / union if union > 0 else 0
+            match_pct    = intersection / airtel_poly.area if airtel_poly.area > 0 else 0
+            fp_area      = simulated_coverage_poly.difference(airtel_poly).area
+            missed_area  = airtel_poly.difference(simulated_coverage_poly).area
+            fp_pct       = fp_area / simulated_coverage_poly.area if simulated_coverage_poly.area > 0 else 0
+            missed_pct   = missed_area / airtel_poly.area if airtel_poly.area > 0 else 0
+            return {
+                "IoU":                round(iou, 4),
+                "Match_Percentage":   round(match_pct * 100, 2),
+                "False_Positive_Pct": round(fp_pct * 100, 2),
+                "Missed_Coverage_Pct": round(missed_pct * 100, 2),
+            }
+        except Exception as e:
+            print(f"  Validation failed: {e}")
+            return self._dummy_validation()
+
+    def generate_simulated_coverage_multi_tier(self, grid_df, all_towers_dict: dict):
+        """
+        Build the combined coverage polygon for all three tiers.
+        Uses each tier's coverage_radius_m from config['tower_types'].
+        Returns a single shapely geometry (union of all per-tower buffers).
+        """
+        from shapely.ops import unary_union
+        freq_mhz = self.config['rf_params']['frequency_mhz']
+        rsrp_min = self.config['thresholds']['rsrp_min_dbm']
+        buffers  = []
+
+        for tier_name, towers_df in all_towers_dict.items():
+            if towers_df is None or len(towers_df) == 0 or 'x' not in towers_df.columns:
+                continue
+            spec = self.config.get('tower_types', {}).get(tier_name, {})
+            if not spec:
+                continue
+            from src.models.propagation import PropagationModel
+            r_m = PropagationModel.coverage_radius_m(spec, freq_mhz, rsrp_min)
+            for _, row in towers_df.iterrows():
+                buffers.append(Point(row['x'], row['y']).buffer(r_m))
+
+        if not buffers:
+            return Polygon()
+        return unary_union(buffers)
+
     def _dummy_validation(self):
         """Return dummy validation scores if real data is missing."""
         return {

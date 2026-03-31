@@ -5,9 +5,10 @@ Runs end-to-end:
   1. Data preprocessing (GADM boundary + OSM features)
   2. ML demand prediction (OpenCellID labels if available, else proxy)
   3. Candidate site generation
-  4. NSGA-II multi-objective optimization
-  5. Visualization (heatmap, Pareto front, sites map, Folium HTML)
-  6. Airtel coverage validation
+  4. NSGA-II multi-objective optimization (macro towers)
+  4.5 Multi-tier gap filling (micro + small cell)
+  5. Visualization (heatmap, Pareto front, sites map, multi-tier Folium HTML)
+  6. Airtel coverage validation (multi-tier)
   7. Results summary table saved to outputs/RESULTS.md
 """
 
@@ -28,10 +29,12 @@ start_total = time.time()
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.getcwd())
 
+import geopandas as gpd
 from src.data.preprocessing import DataPreprocessor
 from src.models.demand import DemandModel
 from src.optimization.candidates import CandidateSiteGenerator
 from src.optimization.nsga2 import MultiObjectiveOptimizer
+from src.optimization.multi_tier import MultiTierOptimizer
 from src.validation.validate import CoverageValidator
 from src.visualization.visualize import Visualizer
 from download_airtel import download_airtel_coverage
@@ -95,6 +98,43 @@ res, best_towers = optimizer.run_optimization(candidates, grid_with_demand)
 print(f"  Pareto-optimal solutions: {len(res.F)}")
 print(f"  Stage 4 done in {time.time()-t0:.1f}s")
 
+# ─── Stage 4.5: Multi-Tier Gap Filling ───────────────────────────────────────
+print("\n[4.5/7] Multi-tier gap filling (micro + small cell)...")
+t0 = time.time()
+
+# Load Airtel coverage polygon (download if missing)
+if not os.path.exists(config['paths']['airtel_coverage']):
+    print("  Airtel shapefile not found — downloading...")
+    download_airtel_coverage(config['paths']['airtel_coverage'])
+
+crs = config['project']['crs']
+try:
+    airtel_gdf  = gpd.read_file(config['paths']['airtel_coverage']).to_crs(crs)
+    airtel_poly = airtel_gdf.geometry.unary_union
+    print(f"  Airtel coverage polygon loaded  ({airtel_poly.area/1e6:.0f} km²)")
+except Exception as e:
+    print(f"  Warning: could not load Airtel polygon ({e}) — micro fill skipped.")
+    airtel_poly = boundary   # fallback: treat entire district as Airtel area
+
+best_towers['tier'] = 'macro'
+multi_opt    = MultiTierOptimizer(config)
+micro_towers = multi_opt.fill_micro_gaps(grid_with_demand, best_towers, airtel_poly)
+small_towers = multi_opt.fill_small_cell_gaps(grid_with_demand, best_towers, micro_towers)
+
+all_towers_dict = {
+    'macro':      best_towers,
+    'micro':      micro_towers,
+    'small_cell': small_towers,
+}
+coverage_stats = multi_opt.compute_multi_tier_coverage(grid_with_demand, all_towers_dict)
+agg = coverage_stats['aggregate']
+cmp = coverage_stats['comparison']
+print(f"  Total AI towers : {agg['n_towers_total']}  "
+      f"(macro={len(best_towers)}, micro={len(micro_towers)}, small={len(small_towers)})")
+print(f"  vs Airtel       : ~{cmp['airtel_total']:,}  →  {cmp['reduction_pct']:.0f}% fewer towers")
+print(f"  Pop coverage    : {agg['pop_pct']:.1f}%  |  Area: {agg['area_pct']:.1f}%")
+print(f"  Stage 4.5 done in {time.time()-t0:.1f}s")
+
 # ─── Stage 5: Visualisation ───────────────────────────────────────────────────
 print("\n[5/7] Generating outputs...")
 t0 = time.time()
@@ -103,19 +143,16 @@ visuals.plot_heatmap(grid_with_demand, 'predicted_traffic_mbps',
                      'Predicted Traffic Demand (Mbps)', cmap='hot')
 visuals.plot_pareto_front(res)
 visuals.plot_candidates_and_selected(candidates, best_towers, grid_with_demand)
-visuals.generate_html_map(best_towers, grid_with_demand, boundary)
+visuals.generate_html_map(all_towers_dict, grid_with_demand, boundary,
+                           airtel_poly=airtel_poly, coverage_stats=coverage_stats)
 print(f"  Stage 5 done in {time.time()-t0:.1f}s")
 
 # ─── Stage 6: Airtel Validation ───────────────────────────────────────────────
 print("\n[6/7] Validating against Airtel coverage map...")
 t0 = time.time()
-if not os.path.exists(config['paths']['airtel_coverage']):
-    print("  Airtel shapefile not found — downloading...")
-    download_airtel_coverage(config['paths']['airtel_coverage'])
-
-validator = CoverageValidator(config)
-sim_coverage = validator.generate_simulated_coverage(grid_with_demand, best_towers)
-val_metrics  = validator.validate(sim_coverage)
+validator    = CoverageValidator(config)
+sim_coverage = validator.generate_simulated_coverage_multi_tier(grid_with_demand, all_towers_dict)
+val_metrics  = validator.validate_with_poly(sim_coverage, airtel_poly)
 print(f"  Validation metrics: {val_metrics}")
 print(f"  Stage 6 done in {time.time()-t0:.1f}s")
 
@@ -141,21 +178,8 @@ max_loss  = eirp_dbm - rsrp_min
 d_km      = float(np.clip(10 ** ((max_loss - intercept) / slope), 0.1, 15.0))
 radius_m  = d_km * 1000.0
 
-def pct_covered(tower_df, grid_df, radius):
-    tx  = tower_df[['x', 'y']].values
-    gx  = grid_df[['x', 'y']].values
-    pop = grid_df['population'].values
-    covered = np.zeros(len(grid_df), dtype=bool)
-    for tx_pt in tx:
-        covered |= (np.sqrt(((gx - tx_pt) ** 2).sum(axis=1)) <= radius)
-    area_pct = covered.mean() * 100
-    pop_pct  = (pop[covered].sum() / (pop.sum() + 1e-9)) * 100
-    return area_pct, pop_pct
-
 print(f"  EIRP = {eirp_dbm:.0f} dBm  ({tx_dbm} Tx + {ant_gain} gain - {cable_loss} cable)  |  "
-      f"RSRP threshold = {rsrp_min} dBm  |  Coverage radius = {radius_m:.0f} m ({d_km:.2f} km)")
-
-ai_area_pct, ai_pop_pct = pct_covered(best_towers, grid_with_demand, radius_m)
+      f"RSRP threshold = {rsrp_min} dBm  |  Macro radius = {radius_m:.0f} m ({d_km:.2f} km)")
 
 # Best Pareto objectives (un-flip signs)
 F = res.F
@@ -168,25 +192,43 @@ coverage_score      = -best_f[0]
 
 elapsed = time.time() - start_total
 
+per_tier = coverage_stats['per_tier']
+macro_s  = per_tier.get('macro',      {})
+micro_s  = per_tier.get('micro',      {})
+small_s  = per_tier.get('small_cell', {})
+
 summary_lines = [
     "# Cell Tower Optimization — Results Summary\n",
     f"_Generated in {elapsed/60:.1f} minutes | Grid: {config['optimization']['grid_resolution']} m | "
-    f"Towers: {config['optimization']['num_towers']}_\n\n",
+    f"Scope: Nagpur District (9,928 km²)_\n\n",
     "## Configuration\n",
     f"| Parameter | Value |\n|-----------|-------|\n",
     f"| Frequency | {f_mhz} MHz |\n",
-    f"| Tx Power | {tx_dbm} dBm |\n",
-    f"| Antenna Height | {h_te} m |\n",
+    f"| Tx Power (macro) | {tx_dbm} dBm |\n",
+    f"| Antenna Height (macro) | {h_te} m |\n",
     f"| RSRP Threshold | {rsrp_min} dBm |\n",
-    f"| Coverage Radius (COST-231 Hata) | **{radius_m:.0f} m ({d_km:.2f} km)** |\n\n",
-    "## Optimization Results\n",
+    f"| Macro Coverage Radius (COST-231 Hata) | **{radius_m:.0f} m ({d_km:.2f} km)** |\n\n",
+    "## Multi-Tier Tower Deployment vs Airtel\n",
+    "| Tier | AI Count | Airtel Equiv | Area Coverage | Pop Coverage | Demand Coverage |\n",
+    "|------|----------|--------------|--------------|-------------|----------------|\n",
+    f"| Macro Cell (35 m) | **{macro_s.get('n_towers',0)}** | ~1,200 | "
+    f"{macro_s.get('area_pct',0):.1f}% | {macro_s.get('pop_pct',0):.1f}% | {macro_s.get('demand_pct',0):.1f}% |\n",
+    f"| Micro Cell (12 m) | **{micro_s.get('n_towers',0)}** | — | "
+    f"{micro_s.get('area_pct',0):.1f}% | {micro_s.get('pop_pct',0):.1f}% | {micro_s.get('demand_pct',0):.1f}% |\n",
+    f"| Small Cell (6 m) | **{small_s.get('n_towers',0)}** | — | "
+    f"{small_s.get('area_pct',0):.1f}% | {small_s.get('pop_pct',0):.1f}% | {small_s.get('demand_pct',0):.1f}% |\n",
+    f"| **TOTAL** | **{agg['n_towers_total']}** | **~{cmp['airtel_total']:,}** | "
+    f"**{agg['area_pct']:.1f}%** | **{agg['pop_pct']:.1f}%** | **{agg['demand_pct']:.1f}%** |\n\n",
+    f"> **AI achieves {cmp['reduction_pct']:.0f}% fewer towers than Airtel** "
+    f"({agg['n_towers_total']} vs ~{cmp['airtel_total']:,}) "
+    f"while covering {agg['pop_pct']:.1f}% of the district population "
+    f"at RSRP ≥ {rsrp_min} dBm (Airtel indoor planning threshold).\n\n",
+    "## NSGA-II Macro Optimization Results\n",
     f"| Metric | AI Solution |\n|--------|-------------|\n",
-    f"| Number of towers | **{len(best_towers)}** |\n",
+    f"| Macro towers selected | **{len(best_towers)}** |\n",
     f"| Grid points analysed | {len(grid_with_demand):,} |\n",
     f"| Candidate sites evaluated | {len(candidates)} |\n",
     f"| Pareto-optimal configurations | {len(res.F)} |\n",
-    f"| Area coverage | **{ai_area_pct:.1f}%** |\n",
-    f"| Population-weighted coverage | **{ai_pop_pct:.1f}%** |\n",
     f"| Estimated network capacity | **{total_capacity_gbps:.2f} Gbps** |\n\n",
     "## Validation vs Airtel Coverage Map\n",
     f"| Metric | Value |\n|--------|-------|\n",
@@ -199,10 +241,10 @@ summary_lines += [
     f"- {demand_model.label_source}\n\n",
     "## Output Files\n",
     "| File | Description |\n|------|-------------|\n",
-    "| `outputs/interactive_towers.html` | Interactive Folium map — open in browser |\n",
+    "| `outputs/interactive_towers.html` | Interactive Folium map — 4 toggleable layers |\n",
     "| `outputs/pareto_frontier.png` | NSGA-II Pareto trade-off chart |\n",
     "| `outputs/predicted_traffic_mbps_heatmap.png` | Spatial demand forecast |\n",
-    "| `outputs/sites_map.png` | Candidate vs selected tower locations |\n",
+    "| `outputs/sites_map.png` | Candidate vs selected macro tower locations |\n",
 ]
 
 summary_text = "".join(summary_lines)
@@ -210,24 +252,34 @@ with open(os.path.join(config['paths']['output_dir'], "RESULTS.md"), "w") as f:
     f.write(summary_text)
 
 # Print table to console
-print("\n" + "=" * 60)
-print("  RESULTS SUMMARY")
-print("=" * 60)
-print(f"  Coverage radius (COST-231 Hata) : {radius_m:.0f} m  ({d_km:.2f} km)")
-print(f"  Number of towers selected       : {len(best_towers)}")
-print(f"  Area coverage                   : {ai_area_pct:.1f}%")
-print(f"  Population-weighted coverage    : {ai_pop_pct:.1f}%")
-print(f"  Estimated network capacity      : {total_capacity_gbps:.3f} Gbps")
-print(f"  Pareto solutions found          : {len(res.F)}")
-print("-" * 60)
+print("\n" + "=" * 65)
+print("  RESULTS SUMMARY — Nagpur District (9,928 km²)")
+print("=" * 65)
+print(f"  Macro coverage radius (COST-231 Hata) : {radius_m:.0f} m  ({d_km:.2f} km)")
+print(f"  {'Tier':<18} {'AI':>6} {'Airtel':>8} {'Area%':>7} {'Pop%':>7}")
+print(f"  {'-'*18} {'-'*6} {'-'*8} {'-'*7} {'-'*7}")
+print(f"  {'Macro (35 m)':<18} {macro_s.get('n_towers',0):>6} {'~1,200':>8} "
+      f"{macro_s.get('area_pct',0):>6.1f}% {macro_s.get('pop_pct',0):>6.1f}%")
+print(f"  {'Micro (12 m)':<18} {micro_s.get('n_towers',0):>6} {'—':>8} "
+      f"{micro_s.get('area_pct',0):>6.1f}% {micro_s.get('pop_pct',0):>6.1f}%")
+print(f"  {'Small Cell (6 m)':<18} {small_s.get('n_towers',0):>6} {'—':>8} "
+      f"{small_s.get('area_pct',0):>6.1f}% {small_s.get('pop_pct',0):>6.1f}%")
+print(f"  {'TOTAL':<18} {agg['n_towers_total']:>6} {'~1,200':>8} "
+      f"{agg['area_pct']:>6.1f}% {agg['pop_pct']:>6.1f}%")
+print("=" * 65)
+print(f"  AI uses {cmp['reduction_pct']:.0f}% FEWER towers than Airtel  "
+      f"({agg['n_towers_total']} vs ~{cmp['airtel_total']:,})")
+print(f"  Estimated network capacity : {total_capacity_gbps:.3f} Gbps")
+print(f"  Pareto solutions found     : {len(res.F)}")
+print("-" * 65)
 print("  Airtel IoU validation           :", val_metrics.get('IoU', 'N/A'))
 print("  Airtel match %                  :", val_metrics.get('Match_Percentage', 'N/A'))
-print("-" * 60)
+print("-" * 65)
 print(f"  Label source: {demand_model.label_source}")
-print("=" * 60)
+print("=" * 65)
 print(f"\n  Total runtime: {elapsed/60:.1f} minutes")
 print(f"\n  Outputs saved to: {os.path.abspath(config['paths']['output_dir'])}/")
-print("    - interactive_towers.html  (open in browser)")
+print("    - interactive_towers.html  (open in browser — 4 toggleable layers)")
 print("    - pareto_frontier.png")
 print("    - predicted_traffic_mbps_heatmap.png")
 print("    - sites_map.png")

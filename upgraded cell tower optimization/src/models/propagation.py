@@ -2,6 +2,78 @@ import numpy as np
 import math
 
 class PropagationModel:
+
+    # ── Class-level helpers (tower-type agnostic) ────────────────────────────
+
+    @staticmethod
+    def coverage_radius_m(tower_type_spec: dict, frequency_mhz: float,
+                          rsrp_min_dbm: float) -> float:
+        """
+        Analytically invert COST-231 Hata to find the coverage radius (metres)
+        at which RSRP equals rsrp_min_dbm for the given tower type spec.
+
+        Formula:
+            EIRP     = tx_power_dbm + antenna_gain_dbi - cable_loss_db
+            max_loss = EIRP - rsrp_min_dbm
+            COST-231: L = intercept + slope * log10(d_km)
+            → d_km   = 10^((max_loss - intercept) / slope)
+
+        Works for all three tiers (macro, micro, small_cell) by accepting the
+        tower_type_spec dict from config['tower_types'][tier].
+
+        Returns radius in metres, clamped to [50 m, 15 km].
+        """
+        ht   = tower_type_spec['height_m']
+        hr   = tower_type_spec.get('receiver_height_m', 1.5)
+        eirp = (tower_type_spec['tx_power_dbm']
+                + tower_type_spec['antenna_gain_dbi']
+                - tower_type_spec['cable_loss_db'])
+        f    = frequency_mhz
+        a_hre     = (1.1 * np.log10(f) - 0.7) * hr - (1.56 * np.log10(f) - 0.8)
+        intercept = 46.3 + 33.9 * np.log10(f) - 13.82 * np.log10(ht) - a_hre + 3.0
+        slope     = 44.9 - 6.55 * np.log10(ht)
+        max_loss  = eirp - rsrp_min_dbm
+        log10_d   = (max_loss - intercept) / slope
+        return float(np.clip(10 ** log10_d, 0.05, 15.0)) * 1000.0
+
+    @staticmethod
+    def compute_rsrp_vectorized(tower_type_spec: dict, frequency_mhz: float,
+                                grid_xy: np.ndarray,
+                                tower_xy: np.ndarray) -> np.ndarray:
+        """
+        Compute RSRP (dBm) for every (grid_point, tower) pair using COST-231 Hata.
+
+        Parameters
+        ----------
+        tower_type_spec : dict   — one entry from config['tower_types']
+        frequency_mhz   : float  — carrier frequency in MHz (e.g. 1800)
+        grid_xy         : (N, 2) array of UTM [x, y] for demand grid points
+        tower_xy        : (M, 2) array of UTM [x, y] for tower locations
+
+        Returns
+        -------
+        rsrp : (N, M) ndarray of RSRP values in dBm
+        """
+        ht      = tower_type_spec['height_m']
+        hr      = tower_type_spec.get('receiver_height_m', 1.5)
+        eirp    = (tower_type_spec['tx_power_dbm']
+                   + tower_type_spec['antenna_gain_dbi']
+                   - tower_type_spec['cable_loss_db'])
+        f       = frequency_mhz
+
+        # (N, M) distance matrix in km, clipped to 0.001 km minimum
+        d_x  = grid_xy[:, 0:1] - tower_xy[:, 0]   # (N, M)
+        d_y  = grid_xy[:, 1:2] - tower_xy[:, 1]
+        d_km = np.maximum(np.sqrt(d_x**2 + d_y**2) / 1000.0, 0.001)
+
+        # COST-231 Hata path loss (urban form with cm=3 dB)
+        a_hre     = (1.1 * np.log10(f) - 0.7) * hr - (1.56 * np.log10(f) - 0.8)
+        intercept = 46.3 + 33.9 * np.log10(f) - 13.82 * np.log10(ht) - a_hre + 3.0
+        slope     = 44.9 - 6.55 * np.log10(ht)
+        pl        = intercept + slope * np.log10(d_km)
+        pl        = np.maximum(38.0, pl)   # physical path-loss floor
+
+        return eirp - pl   # RSRP = EIRP - PathLoss (dBm)
     def __init__(self, config):
         self.config = config
         self.freq_mhz = self.config['rf_params']['frequency_mhz']

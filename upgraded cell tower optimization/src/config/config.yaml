@@ -1,14 +1,14 @@
 project:
-  name: "Nagpur_Cell_Tower_Planning"
+  name: "Nagpur_District_Cell_Tower_Planning"
   seed: 42
   crs: "EPSG:32644"  # UTM Zone 44N for Nagpur region
 
 optimization:
-  num_towers: 50
-  grid_resolution: 500      # metres
+  num_towers: 80           # District-scale budget (was 50 for city-only)
+  grid_resolution: 750     # metres — covers 9,928 km² in ~17,650 points (was 500m/39k)
   population_per_user: 10
   traffic_per_user_mbps: 2.5
-  min_tower_distance: 500   # metres
+  min_tower_distance: 500  # metres
 
 # ─── RF Parameters ────────────────────────────────────────────────────────────
 # Source: Airtel India macro BTS specifications (Band 3 / 1800 MHz FDD)
@@ -47,17 +47,63 @@ rf_params:
                                # Ref: COST Action 231 Final Report, 1999
 
 # ─── Coverage Thresholds ──────────────────────────────────────────────────────
-# rsrp_min_dbm: -95 dBm = Airtel India indoor planning threshold
-#   Outdoor RSRP -95 dBm → indoor ~-110 to -115 dBm (15-20 dB building penetration)
-#   Provides 90% coverage probability with 8 dB shadow fading margin
-#   Source: Airtel RF planning guidelines; GSMA network coverage methodology 2022
-#
-# sinr_min_db: -6 dBm = minimum for QPSK 1/3 rate (basic data/voice)
-#   Source: 3GPP TS 36.214 Table 5.2.2.1
-# ──────────────────────────────────────────────────────────────────────────────
 thresholds:
   rsrp_min_dbm: -95            # Indoor coverage planning threshold (Airtel India standard)
   sinr_min_db: -6              # Minimum SINR for basic LTE connectivity
+
+# ─── Multi-tier Tower Specifications ──────────────────────────────────────────
+# Three tiers matching real Airtel India deployments:
+#   Macro  — Ground-Based Tower/Mast (GBT/GBM), primary coverage layer
+#   Micro  — Street-level cabinet (10-15m), fills dense urban/town gaps
+#   Small  — Lamppost/rooftop node, fills indoor/hotspot demand
+#
+# Coverage radius computed via COST-231 Hata inversion at RSRP = -95 dBm:
+#   Macro : EIRP 62 dBm, h=35m  → 3,454 m
+#   Micro : EIRP 41 dBm, h=12m  →   600 m
+#   Small : EIRP 28 dBm, h= 6m  →   150 m
+# ──────────────────────────────────────────────────────────────────────────────
+tower_types:
+  macro:
+    height_m: 35
+    tx_power_dbm: 46          # Ericsson AIR 2219, 40W/port
+    antenna_gain_dbi: 18      # 65° sector panel
+    cable_loss_db: 2
+    eirp_dbm: 62              # 46 + 18 - 2
+    coverage_radius_m: 3454   # COST-231 at RSRP -95 dBm
+    color: "red"
+    display_name: "Macro Cell (GBT/GBM)"
+    airtel_equivalent: 1200   # ~1,200 Airtel macro sites in Nagpur district (TRAI data)
+    deploy_budget: 80
+
+  micro:
+    height_m: 12
+    tx_power_dbm: 37          # 5 W output (typical micro BTS)
+    antenna_gain_dbi: 5       # Omnidirectional / low-profile panel
+    cable_loss_db: 1
+    eirp_dbm: 41              # 37 + 5 - 1
+    coverage_radius_m: 600    # COST-231 at RSRP -95 dBm
+    color: "orange"
+    display_name: "Micro Cell"
+    airtel_equivalent: 0
+    deploy_budget: 100
+
+  small_cell:
+    height_m: 6
+    tx_power_dbm: 24          # 250 mW output (typical small cell node)
+    antenna_gain_dbi: 5
+    cable_loss_db: 1
+    eirp_dbm: 28              # 24 + 5 - 1
+    coverage_radius_m: 150    # COST-231 at RSRP -95 dBm
+    color: "#FFD700"
+    display_name: "Small Cell"
+    airtel_equivalent: 0
+    deploy_budget: 150
+
+# ─── Multi-tier Optimizer Settings ────────────────────────────────────────────
+multi_tier:
+  micro_demand_threshold_pct: 50   # micro fills gaps where demand > 50th percentile
+  small_cell_demand_threshold_pct: 70  # small cells target top-30% demand hotspots
+  airtel_total_sites: 1200         # reference for "AI vs Airtel" comparison table
 
 nsga2:
   pop_size: 40
