@@ -18,17 +18,28 @@ print("--- Starting Upgraded Interactive Map Generation ---")
 # RSRP = Tx_power - PathLoss  →  solve for d when RSRP = RSRP_MIN_DBM
 # ---------------------------------------------------------------------------
 def _cost231_coverage_radius_m():
-    """Return edge-of-coverage radius (m) where RSRP >= Config.RSRP_MIN_DBM."""
-    max_loss = Config.TRANSMIT_POWER_DBM - Config.RSRP_MIN_DBM  # dB budget
-    f = Config.FREQUENCY_MHZ
-    h_te = Config.TOWER_HEIGHT_M
-    h_re = Config.USER_HEIGHT_M
-    a_hre = (1.1 * np.log10(f) - 0.7) * h_re - (1.56 * np.log10(f) - 0.8)
-    cm = 3.0  # urban correction (worst case)
+    """
+    Edge-of-coverage radius (m) where RSRP = Config.RSRP_MIN_DBM.
+    Uses full EIRP = Tx_power + Antenna_gain - Cable_loss.
+    """
+    # Read all RF parameters from Config class (src/config.py)
+    tx_dbm     = Config.TRANSMIT_POWER_DBM
+    ant_gain   = getattr(Config, 'ANTENNA_GAIN_DBI',  18)  # 65-deg sector panel
+    cable_loss = getattr(Config, 'CABLE_LOSS_DB',      2)  # feeder + connectors
+    rsrp_min   = Config.RSRP_MIN_DBM
+    f          = Config.FREQUENCY_MHZ
+    h_te       = Config.TOWER_HEIGHT_M
+    h_re       = Config.USER_HEIGHT_M
+
+    eirp_dbm  = tx_dbm + ant_gain - cable_loss
+    max_loss  = eirp_dbm - rsrp_min          # maximum tolerable path loss (dB)
+
+    a_hre     = (1.1 * np.log10(f) - 0.7) * h_re - (1.56 * np.log10(f) - 0.8)
+    cm        = 3.0
     intercept = 46.3 + 33.9 * np.log10(f) - 13.82 * np.log10(h_te) - a_hre + cm
-    slope = 44.9 - 6.55 * np.log10(h_te)
-    log10_d = (max_loss - intercept) / slope
-    d_km = float(np.clip(10 ** log10_d, 0.2, 5.0))
+    slope     = 44.9 - 6.55 * np.log10(h_te)
+    log10_d   = (max_loss - intercept) / slope
+    d_km      = float(np.clip(10 ** log10_d, 0.1, 15.0))
     return d_km * 1000.0  # metres
 
 coverage_radius_m = _cost231_coverage_radius_m()

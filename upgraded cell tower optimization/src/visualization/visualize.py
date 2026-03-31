@@ -9,35 +9,36 @@ import numpy as np
 
 def _coverage_radius_m(config):
     """
-    Compute the maximum coverage radius (metres) at which RSRP equals the
-    minimum usable threshold, using the COST-231 Hata model.
+    Compute the maximum coverage radius (metres) where RSRP = rsrp_min_dbm,
+    using COST-231 Hata with the full EIRP budget from config.
 
     Derivation:
-        RSRP = Tx_power - PathLoss
-        PathLoss = Tx_power - RSRP_min   (at edge-of-coverage)
-        COST-231: L = A + B * log10(d)  →  d = 10^((L - A) / B)
+        EIRP     = Tx_power + Antenna_gain - Cable_loss        (dBm)
+        RSRP     = EIRP - PathLoss
+        PathLoss = EIRP - RSRP_min   at edge-of-coverage
+        COST-231: L = intercept + slope * log10(d)
+        → d = 10^( (max_path_loss - intercept) / slope )
     """
-    rf = config['rf_params']
-    f_mhz = rf['frequency_mhz']
-    h_te  = rf['antenna_height_m']
-    h_re  = rf.get('receiver_height_m', 1.5)
-    tx_dbm = rf['transmit_power_dbm']
-    rsrp_min_dbm = config.get('thresholds', {}).get('rsrp_min_dbm', -110)
+    rf         = config['rf_params']
+    f_mhz      = rf['frequency_mhz']
+    h_te       = rf['antenna_height_m']
+    h_re       = rf.get('receiver_height_m', 1.5)
+    tx_dbm     = rf['transmit_power_dbm']
+    ant_gain   = rf.get('antenna_gain_dbi', 18)   # 65-deg sector panel
+    cable_loss = rf.get('cable_loss_db',    2)     # feeder + connectors
+    rsrp_min   = config.get('thresholds', {}).get('rsrp_min_dbm', -95)
 
-    max_loss = tx_dbm - rsrp_min_dbm  # dB
+    eirp_dbm  = tx_dbm + ant_gain - cable_loss           # Effective radiated power
+    max_loss  = eirp_dbm - rsrp_min                      # Maximum tolerable path loss
 
-    # a(h_re) correction
-    a_hre = (1.1 * np.log10(f_mhz) - 0.7) * h_re - (1.56 * np.log10(f_mhz) - 0.8)
-    # Cm environment correction (urban = 3 dB)
-    cm = 3.0
-    # Intercept and slope of COST-231 Hata
+    # COST-231 Hata (medium-small city form)
+    a_hre     = (1.1 * np.log10(f_mhz) - 0.7) * h_re - (1.56 * np.log10(f_mhz) - 0.8)
+    cm        = 3.0   # urban correction
     intercept = 46.3 + 33.9 * np.log10(f_mhz) - 13.82 * np.log10(h_te) - a_hre + cm
-    slope = 44.9 - 6.55 * np.log10(h_te)
+    slope     = 44.9 - 6.55 * np.log10(h_te)
 
-    log10_d = (max_loss - intercept) / slope
-    d_km = 10 ** log10_d
-    # Clamp to sensible urban range (0.2 km – 5 km)
-    d_km = float(np.clip(d_km, 0.2, 5.0))
+    log10_d   = (max_loss - intercept) / slope
+    d_km      = float(np.clip(10 ** log10_d, 0.1, 15.0))  # physical range 0.1–15 km
     return d_km * 1000.0  # metres
 
 class Visualizer:

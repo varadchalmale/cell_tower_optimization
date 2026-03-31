@@ -4,11 +4,11 @@ _Generated in 0.9 minutes | Grid: 500 m | Towers: 50_
 ## Configuration
 | Parameter | Value |
 |-----------|-------|
-| Frequency | 2100 MHz |
-| Tx Power | 43 dBm |
-| Antenna Height | 30 m |
-| RSRP Threshold | -110 dBm |
-| Coverage Radius (COST-231 Hata) | **2126 m (2.13 km)** |
+| Frequency | 1800 MHz |
+| Tx Power | 46 dBm |
+| Antenna Height | 35 m |
+| RSRP Threshold | -95 dBm |
+| Coverage Radius (COST-231 Hata) | **3454 m (3.45 km)** |
 
 ## Optimization Results
 | Metric | AI Solution |
@@ -16,18 +16,18 @@ _Generated in 0.9 minutes | Grid: 500 m | Towers: 50_
 | Number of towers | **50** |
 | Grid points analysed | 39,691 |
 | Candidate sites evaluated | 500 |
-| Pareto-optimal configurations | 39 |
-| Area coverage | **2.7%** |
-| Population-weighted coverage | **41.0%** |
-| Estimated network capacity | **52.07 Gbps** |
+| Pareto-optimal configurations | 24 |
+| Area coverage | **4.0%** |
+| Population-weighted coverage | **54.1%** |
+| Estimated network capacity | **64.20 Gbps** |
 
 ## Validation vs Airtel Coverage Map
 | Metric | Value |
 |--------|-------|
-| IoU | 0.0798 |
-| Match_Percentage | 44.09 |
-| False_Positive_Pct | 91.12 |
-| Missed_Coverage_Pct | 55.91 |
+| IoU | 0.0561 |
+| Match_Percentage | 24.13 |
+| False_Positive_Pct | 93.18 |
+| Missed_Coverage_Pct | 75.87 |
 
 ## Label Source (demand model)
 - infrastructure-weighted population proxy (no real traffic data)

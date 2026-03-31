@@ -26,23 +26,33 @@ class CellTowerPlanningProblem(ElementwiseProblem):
         # rows: grid points, columns: candidates
         self.candidate_rsrp = np.zeros((len(grid_df), len(candidates_df)))
         
-        fc = self.config['rf_params']['frequency_mhz']
-        tx_power = self.config['rf_params']['transmit_power_dbm']
-        ht = self.config['rf_params']['antenna_height_m']
-        hr = self.config['rf_params']['receiver_height_m']
-        
+        fc         = self.config['rf_params']['frequency_mhz']
+        tx_power   = self.config['rf_params']['transmit_power_dbm']
+        ht         = self.config['rf_params']['antenna_height_m']
+        hr         = self.config['rf_params']['receiver_height_m']
+        # EIRP = Tx_power + Antenna_gain - Cable_loss
+        ant_gain   = self.config['rf_params'].get('antenna_gain_dbi', 18)   # 65-deg sector panel
+        cable_loss = self.config['rf_params'].get('cable_loss_db',    2)    # jumper + feeder
+
+        # COST-231 Hata constants (medium-small city form; valid 150–2000 MHz)
+        # a(h_re) receiver height correction
+        a_hre = (1.1 * np.log10(fc) - 0.7) * hr - (1.56 * np.log10(fc) - 0.8)
+        cm    = 3.0   # urban environment correction (dB)
+        # Pre-compute distance-independent part of path loss
+        pl_intercept = (46.3 + 33.9 * np.log10(fc)
+                        - 13.82 * np.log10(ht) - a_hre + cm)
+        pl_slope     = 44.9 - 6.55 * np.log10(ht)
+
         for i, row in candidates_df.iterrows():
-            d_x = grid_df['x'].values - row['x']
-            d_y = grid_df['y'].values - row['y']
-            d_km = np.sqrt(d_x**2 + d_y**2) / 1000.0
-            d_km = np.maximum(d_km, 0.001)
-            
-            # Simplified vector pathloss calculation (COST231 logic)
-            ahr = 3.2 * (np.log10(11.75 * hr))**2 - 4.97
-            # Assuming urban cm=3
-            pl = (46.3 + 33.9 * np.log10(fc) - 13.82 * np.log10(ht) - ahr + (44.9 - 6.55 * np.log10(ht)) * np.log10(d_km) + 3)
-            pl = np.maximum(38.0, pl)
-            self.candidate_rsrp[:, i] = tx_power + 15.0 - pl
+            d_x   = grid_df['x'].values - row['x']
+            d_y   = grid_df['y'].values - row['y']
+            d_km  = np.maximum(np.sqrt(d_x**2 + d_y**2) / 1000.0, 0.001)
+
+            pl    = pl_intercept + pl_slope * np.log10(d_km)
+            pl    = np.maximum(38.0, pl)          # physical minimum path loss
+
+            # RSRP = EIRP - PathLoss  (all in dBm / dB)
+            self.candidate_rsrp[:, i] = tx_power + ant_gain - cable_loss - pl
 
     def _evaluate(self, x, out, *args, **kwargs):
         # Decode variables into candidate indices
@@ -65,8 +75,11 @@ class CellTowerPlanningProblem(ElementwiseProblem):
         assignment_matrix[np.arange(len(self.grid)), best_server_idx] = 1
 
         # Approximation of SINR
+        # Noise floor: N = k·T·B  for 20 MHz LTE channel = -174 + 10·log10(20e6) + NF
+        # Simplification: use standard -104 dBm (NF ≈ 7 dB, 20 MHz BW) unless overridden
+        noise_floor_dbm = self.config.get('thresholds', {}).get('noise_floor_dbm', -104)
         interference_rsrp = np.sum(10**(rsrp_active/10.0), axis=1) - 10**(best_rsrp/10.0)
-        noise = 10**(-104/10.0)
+        noise = 10**(noise_floor_dbm / 10.0)
         sinr_lin = 10**(best_rsrp/10.0) / (interference_rsrp + noise + 1e-12)
         sinr_db = 10 * np.log10(sinr_lin + 1e-12)
         

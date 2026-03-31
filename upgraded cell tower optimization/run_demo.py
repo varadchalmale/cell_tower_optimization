@@ -123,22 +123,27 @@ print(f"  Stage 6 done in {time.time()-t0:.1f}s")
 print("\n[7/7] Computing coverage statistics & writing results summary...")
 
 # Coverage radius from COST-231 Hata
-f_mhz  = config['rf_params']['frequency_mhz']
-h_te   = config['rf_params']['antenna_height_m']
-h_re   = config['rf_params']['receiver_height_m']
-tx_dbm = config['rf_params']['transmit_power_dbm']
-rsrp_min = config.get('thresholds', {}).get('rsrp_min_dbm', -110)
+# EIRP = Tx_power + Antenna_gain - Cable_loss  (Airtel Band 3 macro: 46+18-2 = 62 dBm)
+# max_path_loss = EIRP - RSRP_min               (62 - (-95) = 157 dB)
+f_mhz      = config['rf_params']['frequency_mhz']
+h_te       = config['rf_params']['antenna_height_m']
+h_re       = config['rf_params']['receiver_height_m']
+tx_dbm     = config['rf_params']['transmit_power_dbm']
+ant_gain   = config['rf_params'].get('antenna_gain_dbi', 18)
+cable_loss = config['rf_params'].get('cable_loss_db',    2)
+rsrp_min   = config.get('thresholds', {}).get('rsrp_min_dbm', -95)
 
+eirp_dbm  = tx_dbm + ant_gain - cable_loss
 a_hre     = (1.1 * np.log10(f_mhz) - 0.7) * h_re - (1.56 * np.log10(f_mhz) - 0.8)
 intercept = 46.3 + 33.9 * np.log10(f_mhz) - 13.82 * np.log10(h_te) - a_hre + 3.0
 slope     = 44.9 - 6.55 * np.log10(h_te)
-max_loss  = tx_dbm - rsrp_min
-d_km      = float(np.clip(10 ** ((max_loss - intercept) / slope), 0.2, 5.0))
+max_loss  = eirp_dbm - rsrp_min
+d_km      = float(np.clip(10 ** ((max_loss - intercept) / slope), 0.1, 15.0))
 radius_m  = d_km * 1000.0
 
 def pct_covered(tower_df, grid_df, radius):
-    tx = tower_df[['x', 'y']].values
-    gx = grid_df[['x', 'y']].values
+    tx  = tower_df[['x', 'y']].values
+    gx  = grid_df[['x', 'y']].values
     pop = grid_df['population'].values
     covered = np.zeros(len(grid_df), dtype=bool)
     for tx_pt in tx:
@@ -146,6 +151,9 @@ def pct_covered(tower_df, grid_df, radius):
     area_pct = covered.mean() * 100
     pop_pct  = (pop[covered].sum() / (pop.sum() + 1e-9)) * 100
     return area_pct, pop_pct
+
+print(f"  EIRP = {eirp_dbm:.0f} dBm  ({tx_dbm} Tx + {ant_gain} gain - {cable_loss} cable)  |  "
+      f"RSRP threshold = {rsrp_min} dBm  |  Coverage radius = {radius_m:.0f} m ({d_km:.2f} km)")
 
 ai_area_pct, ai_pop_pct = pct_covered(best_towers, grid_with_demand, radius_m)
 

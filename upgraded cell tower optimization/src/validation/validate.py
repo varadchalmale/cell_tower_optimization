@@ -25,20 +25,26 @@ class CoverageValidator:
         d_km = np.sqrt(d_x**2 + d_y**2) / 1000.0
         d_km = np.maximum(d_km, 0.001)
         
-        fc = self.config['rf_params']['frequency_mhz']
-        tx_power = self.config['rf_params']['transmit_power_dbm']
-        ht = self.config['rf_params']['antenna_height_m']
-        hr = self.config['rf_params']['receiver_height_m']
-        
-        ahr = 3.2 * (np.log10(11.75 * hr))**2 - 4.97
-        pl = (46.3 + 33.9 * np.log10(fc) - 13.82 * np.log10(ht) - ahr + (44.9 - 6.55 * np.log10(ht)) * np.log10(d_km) + 3)
-        pl = np.maximum(38.0, pl)
-        
-        rsrp_matrix = tx_power + 15.0 - pl
-        best_rsrp = np.max(rsrp_matrix, axis=1)
-        
-        # Covered points: RSRP > -110 dBm
-        covered_indices = np.where(best_rsrp > -110)[0]
+        fc         = self.config['rf_params']['frequency_mhz']
+        tx_power   = self.config['rf_params']['transmit_power_dbm']
+        ht         = self.config['rf_params']['antenna_height_m']
+        hr         = self.config['rf_params']['receiver_height_m']
+        ant_gain   = self.config['rf_params'].get('antenna_gain_dbi', 18)
+        cable_loss = self.config['rf_params'].get('cable_loss_db',    2)
+        rsrp_min   = self.config.get('thresholds', {}).get('rsrp_min_dbm', -95)
+
+        # COST-231 Hata (medium-small city form)
+        a_hre = (1.1 * np.log10(fc) - 0.7) * hr - (1.56 * np.log10(fc) - 0.8)
+        pl    = (46.3 + 33.9 * np.log10(fc) - 13.82 * np.log10(ht) - a_hre
+                 + (44.9 - 6.55 * np.log10(ht)) * np.log10(d_km) + 3.0)
+        pl    = np.maximum(38.0, pl)
+
+        # RSRP = EIRP - PathLoss
+        rsrp_matrix = tx_power + ant_gain - cable_loss - pl
+        best_rsrp   = np.max(rsrp_matrix, axis=1)
+
+        # Covered: RSRP >= rsrp_min_dbm (from config — Airtel indoor planning threshold)
+        covered_indices = np.where(best_rsrp >= rsrp_min)[0]
         
         if len(covered_indices) == 0:
             return Polygon()
