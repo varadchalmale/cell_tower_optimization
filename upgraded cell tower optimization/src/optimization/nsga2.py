@@ -115,12 +115,32 @@ class CellTowerPlanningProblem(ElementwiseProblem):
         # Obj 2: Maximize overall usable capacity
         obj2 = -np.sum(throughput) # maximize sum of user peak throughputs
 
-        # Obj 3: Minimize deployment cost
+        # Obj 3: Minimize deployment cost + geographic concentration penalty
+        # Geographic penalty: penalise solutions where all towers cluster in
+        # one area by adding a term proportional to the variance deficit.
+        # Specifically: penalise if the mean inter-tower distance is small
+        # (compact cluster) vs. a well-spread solution.
         cands = self.candidates.iloc[selected_indices]
         road_penalties = 1.0 / (cands['road_density'].values + 0.1)
         land_penalties = cands['building_density'].values * 10
-        obj3 = np.sum(road_penalties + land_penalties)
-        
+        deployment_cost = np.sum(road_penalties + land_penalties)
+
+        # Geographic spread bonus: reward solutions where towers cover
+        # different parts of the study area (punish tight clusters).
+        tower_xy = cands[['x', 'y']].values
+        # Mean pairwise distance between towers (normalised by area diagonal)
+        if len(tower_xy) > 1:
+            dx = tower_xy[:, 0][:, None] - tower_xy[:, 0][None, :]
+            dy = tower_xy[:, 1][:, None] - tower_xy[:, 1][None, :]
+            pairwise_d = np.sqrt(dx**2 + dy**2)
+            mean_spread_m = pairwise_d[np.triu_indices(len(tower_xy), k=1)].mean()
+        else:
+            mean_spread_m = 0.0
+        # Penalise if mean spread is below 5 km (encourages geographic diversity)
+        spread_penalty = max(0.0, 5000.0 - mean_spread_m) * 0.01
+
+        obj3 = deployment_cost + spread_penalty
+
         out["F"] = [obj1, obj2, obj3]
 
 class MultiObjectiveOptimizer:

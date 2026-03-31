@@ -149,10 +149,28 @@ class DataPreprocessor:
             if os.path.exists(pop_raster_path):
                 pop_val = 100  # placeholder — replace with rasterio.read when real data available
             else:
-                NAGPUR_X, NAGPUR_Y = 290000, 2347000   # city centre in EPSG:32644
-                dist_km = np.sqrt((pt.x - NAGPUR_X)**2 + (pt.y - NAGPUR_Y)**2) / 1000.0
-                # Peak ~1200 people/cell in city core, falls off with 8 km standard deviation
-                pop_val = float(np.maximum(10, 1200 * np.exp(-0.5 * (dist_km / 8.0)**2)))
+                # ── Multi-Gaussian population model for Nagpur (EPSG:32644) ──────────
+                # Each tuple: (X_utm, Y_utm, peak_density, sigma_km)
+                # Centres derived from real Nagpur urban geography:
+                #   Main city core (Mahal/Itwari/Sitabuldi):  301475, 2339479
+                #   Civil Lines / Dharampeth (W):             297000, 2340500
+                #   Kamptee corridor (NE):                    311000, 2346000
+                #   Wardha Road / Hingna corridor (SW):       293000, 2334000
+                #   Butibori industrial / SE suburbs:         304000, 2327000
+                #   Manewada / Besa (E suburbs):              308000, 2335000
+                NAGPUR_POPS = [
+                    (301475, 2339479, 1500, 5.0),   # dense city core
+                    (297000, 2340500,  800, 4.0),   # Civil Lines / Dharampeth
+                    (311000, 2346000,  500, 3.5),   # Kamptee (NE)
+                    (293000, 2334000,  400, 3.5),   # Hingna / SW industrial
+                    (304000, 2327000,  350, 3.0),   # Butibori / SE suburbs
+                    (308000, 2335000,  600, 3.5),   # Manewada / Besa (E)
+                ]
+                pop_val = 10.0
+                for cx, cy, peak, sigma in NAGPUR_POPS:
+                    d_km = np.sqrt((pt.x - cx)**2 + (pt.y - cy)**2) / 1000.0
+                    pop_val += peak * np.exp(-0.5 * (d_km / sigma)**2)
+                pop_val = float(np.maximum(10, pop_val))
 
             if os.path.exists(dem_raster_path):
                 dem_val = 300  # placeholder
