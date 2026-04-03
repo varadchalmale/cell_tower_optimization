@@ -1,62 +1,90 @@
+"""
+3-tier candidate site generation for full-district coverage.
+
+Tier 1 (40%): Urban demand anchors — high traffic, road-adjacent, buildable
+Tier 2 (35%): Suburban bridging — medium demand, relaxed density constraint
+Tier 3 (25%): Rural coverage — any populated point, sorted by population
+"""
+
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point
+
 
 class CandidateSiteGenerator:
     def __init__(self, config):
         self.config = config
-        self.min_dist = self.config['optimization']['min_tower_distance']
+        self.min_dist = config["optimization"]["min_tower_distance"]
 
-    def generate_candidates(self, grid_df, num_candidates=500):
-        """Filter grid points to find feasible candidate sites for towers."""
-        # Rules:
-        # 1. High demand: Top 40% of traffic
-        # 2. Near roads: Road density > 0
-        # 3. Valid land use/building density: avoid > 0.8 (too dense to build)
-        # 4. Filter by minimum distance
+    def generate_candidates(self, grid_df, num_candidates=None):
+        if num_candidates is None:
+            num_candidates = self.config["optimization"].get("candidate_pool_size", 800)
 
-        threshold = grid_df['predicted_traffic_mbps'].quantile(0.6)
-        feasible = grid_df[
-            (grid_df['predicted_traffic_mbps'] > threshold) &
-            (grid_df['road_density'] > 0) &
-            (grid_df['building_density'] < 0.8)
-        ].copy()
+        t1 = int(num_candidates * 0.40)
+        t2 = int(num_candidates * 0.35)
+        t3 = num_candidates - t1 - t2
 
-        # Sort by demand to prioritize high traffic areas
-        feasible = feasible.sort_values(by='predicted_traffic_mbps', ascending=False)
-        
+        q60 = grid_df["predicted_traffic_mbps"].quantile(0.60)
+        q30 = grid_df["predicted_traffic_mbps"].quantile(0.30)
+
+        tier1 = grid_df[
+            (grid_df["predicted_traffic_mbps"] > q60) &
+            (grid_df["road_density"] > 0) &
+            (grid_df["building_density"] < 0.8)
+        ].sort_values("predicted_traffic_mbps", ascending=False)
+
+        tier2 = grid_df[
+            (grid_df["predicted_traffic_mbps"] > q30) &
+            (grid_df["predicted_traffic_mbps"] <= q60) &
+            (grid_df["building_density"] < 0.9)
+        ].sort_values("predicted_traffic_mbps", ascending=False)
+
+        tier3 = grid_df[
+            (grid_df["population"] > 0) &
+            (grid_df["predicted_traffic_mbps"] <= q30)
+        ].sort_values("population", ascending=False)
+
         candidates = []
-        for _, row in feasible.iterrows():
-            pt = Point(row['x'], row['y'])
-            # Check min distance against already selected candidates
-            too_close = False
-            for c in candidates:
-                if pt.distance(Point(c['x'], c['y'])) < self.min_dist:
-                    too_close = True
-                    break
-            
-            if not too_close:
+        seen = set()
+        counts = []
+        min_d2 = self.min_dist ** 2
+
+        for tier, limit in [(tier1, t1), (tier2, t2), (tier3, t3)]:
+            added = 0
+            for _, row in tier.iterrows():
+                if row["grid_id"] in seen:
+                    continue
+                rx, ry = row["x"], row["y"]
+                if any((rx - c["x"]) ** 2 + (ry - c["y"]) ** 2 < min_d2 for c in candidates):
+                    continue
                 candidates.append(row)
-            
-            if len(candidates) >= num_candidates:
-                break
+                seen.add(row["grid_id"])
+                added += 1
+                if added >= limit:
+                    break
+            counts.append(added)
 
-        # If we didn't get enough candidates, relax constraints (fallback)
+        print(f"  Tier 1 (urban):    {counts[0]}")
+        print(f"  Tier 2 (suburban): {counts[1]}")
+        print(f"  Tier 3 (rural):    {counts[2]}")
+
+        # Fallback: relax distance if under target
         if len(candidates) < num_candidates:
-            print(f"Warning: Only found {len(candidates)} candidates following rules. Relaxing constraints.")
-            fallback = grid_df.sort_values(by='predicted_traffic_mbps', ascending=False)
-            for _, row in fallback.iterrows():
-                pt = Point(row['x'], row['y'])
-                too_close = False
-                for c in candidates:
-                    if pt.distance(Point(c['x'], c['y'])) < (self.min_dist / 2): # Relaxed distance
-                        too_close = True
-                        break
-                
-                if not too_close and row['grid_id'] not in [c['grid_id'] for c in candidates]:
-                    candidates.append(row)
-
+            half_d2 = (self.min_dist / 2) ** 2
+            for _, row in grid_df.sort_values("population", ascending=False).iterrows():
+                if row["grid_id"] in seen:
+                    continue
+                rx, ry = row["x"], row["y"]
+                if any((rx - c["x"]) ** 2 + (ry - c["y"]) ** 2 < half_d2 for c in candidates):
+                    continue
+                candidates.append(row)
+                seen.add(row["grid_id"])
                 if len(candidates) >= num_candidates:
                     break
 
         return pd.DataFrame(candidates).reset_index(drop=True)
+
+    def generate_coverage_gap_candidates(self, grid_df):
+        """All populated grid points as gap-fill candidates (no filtering)."""
+        return (grid_df[grid_df["population"] > 0]
+                .sort_values("population", ascending=False)
+                .reset_index(drop=True))

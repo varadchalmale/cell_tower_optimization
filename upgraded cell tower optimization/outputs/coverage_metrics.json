@@ -1,0 +1,63 @@
+{
+  "district_area_km2": 9928.3,
+  "grid_points": 17651,
+  "grid_resolution_m": 750,
+  "rf_frequency_mhz": 1800,
+  "shadow_fading_margin_db": 8,
+  "rsrp_threshold_dbm": -110,
+  "phase1_nsga2": {
+    "population_coverage_pct": 100.0,
+    "geographic_coverage_pct": 100.0,
+    "covered_population": 3020285.2,
+    "total_population": 3020285.2,
+    "uncovered_population": 0.0,
+    "covered_grid_points": 17651,
+    "total_grid_points": 17651,
+    "num_towers": 100,
+    "vs_airtel": "100 vs 1200 (8.3%)"
+  },
+  "final": {
+    "population_coverage_pct": 100.0,
+    "geographic_coverage_pct": 100.0,
+    "covered_population": 3020285.2,
+    "total_population": 3020285.2,
+    "uncovered_population": 0.0,
+    "covered_grid_points": 17651,
+    "total_grid_points": 17651,
+    "num_towers": 100,
+    "vs_airtel": "100 vs 1200 (8.3%)"
+  },
+  "baselines": {
+    "Random": 89.06,
+    "Hexagonal": 69.87,
+    "Hexagonal_towers": 30,
+    "KMeans": 100.0
+  },
+  "airtel_iou": {
+    "IoU": 0.0115,
+    "Match_Percentage": 100.0,
+    "False_Positive_Pct": 98.85,
+    "Missed_Coverage_Pct": 0.0
+  },
+  "sensitivity": {
+    "tower_counts": [
+      10,
+      20,
+      30,
+      50,
+      75,
+      100
+    ],
+    "coverage_pcts": [
+      65.65,
+      74.23,
+      92.74,
+      95.42,
+      100.0,
+      100.0
+    ]
+  },
+  "nsga2_towers": 100,
+  "gap_fill_towers": 0,
+  "total_towers": 100
+}
