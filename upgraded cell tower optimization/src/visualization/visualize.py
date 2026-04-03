@@ -20,6 +20,40 @@ import numpy as np
 from src.models.propagation import compute_coverage_radius_km
 
 
+
+def _coverage_radius_m(config):
+    """
+    Compute the maximum coverage radius (metres) at which RSRP equals the
+    minimum usable threshold, using the COST-231 Hata model.
+
+    Derivation:
+        RSRP = Tx_power - PathLoss
+        PathLoss = Tx_power - RSRP_min   (at edge-of-coverage)
+        COST-231: L = A + B * log10(d)  →  d = 10^((L - A) / B)
+    """
+    rf = config['rf_params']
+    f_mhz = rf['frequency_mhz']
+    h_te  = rf['antenna_height_m']
+    h_re  = rf.get('receiver_height_m', 1.5)
+    tx_dbm = rf['transmit_power_dbm']
+    rsrp_min_dbm = config.get('thresholds', {}).get('rsrp_min_dbm', -110)
+
+    max_loss = tx_dbm - rsrp_min_dbm  # dB
+
+    # a(h_re) correction
+    a_hre = (1.1 * np.log10(f_mhz) - 0.7) * h_re - (1.56 * np.log10(f_mhz) - 0.8)
+    # Cm environment correction (urban = 3 dB)
+    cm = 3.0
+    # Intercept and slope of COST-231 Hata
+    intercept = 46.3 + 33.9 * np.log10(f_mhz) - 13.82 * np.log10(h_te) - a_hre + cm
+    slope = 44.9 - 6.55 * np.log10(h_te)
+
+    log10_d = (max_loss - intercept) / slope
+    d_km = 10 ** log10_d
+    # Clamp to sensible urban range (0.2 km – 5 km)
+    d_km = float(np.clip(d_km, 0.2, 5.0))
+    return d_km * 1000.0  # metres
+
 class Visualizer:
     def __init__(self, config):
         self.config = config
