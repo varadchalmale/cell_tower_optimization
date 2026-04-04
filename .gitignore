@@ -1,3 +1,7 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
 # Python
 __pycache__/
 *.py[cod]
@@ -32,11 +36,15 @@ ENV/
 env.bak/
 venv.bak/
 
-# Data
-data/raw/*
-!data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
+# Data (case-insensitive: covers both Data/ and data/)
+Data/raw/**
+!Data/raw/**/.gitkeep
+Data/processed/**
+!Data/processed/**/.gitkeep
+data/raw/**
+!data/raw/**/.gitkeep
+data/processed/**
+!data/processed/**/.gitkeep
 *.zip
 *.tar.gz
 *.tif
@@ -46,13 +54,17 @@ data/processed/*
 *.shx
 *.dbf
 *.prj
+*.vrt
 
 # IDEs
 .vscode/
 .idea/
+
 # Large models
 models/
 *.pkl
-# Results
-results/
+
+# Results (keep directory structure, ignore generated files)
+results/**
+!results/**/.gitkeep
 

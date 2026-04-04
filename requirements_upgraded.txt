@@ -13,3 +13,7 @@ branca
 pyproj
 osmnx
 contextily
+pymoo>=0.6.0
+pyyaml>=6.0
+elevation
+requests
