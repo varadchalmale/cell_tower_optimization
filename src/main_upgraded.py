@@ -54,21 +54,26 @@ def generate_heatmaps(best_ind, data, results_path):
     h, w = data['demand'].shape
     yy, xx = np.mgrid[0:h, 0:w]
     
+    clutter = data.get('clutter')
+    indoor_mask = (clutter > 0.5) if clutter is not None else None
+
     all_rsrp = []
     for y, x in best_ind:
         dist_km = np.sqrt((xx - x)**2 + (yy - y)**2) * Config.GRID_RESOLUTION_M / 1000.0
-        rsrp = PropagationModel.calculate_rsrp(dist_km)
-        all_rsrp.append(rsrp)
-        
+        # Limitation 2 + 3: use multiband RSRP with indoor penetration loss
+        best_rsrp, _ = PropagationModel.calculate_rsrp_multiband(dist_km, indoor_mask)
+        all_rsrp.append(best_rsrp)
+
     max_rsrp = np.maximum.reduce(all_rsrp)
     total_rsrp_linear = sum([CapacityModel.dbm_to_linear(r) for r in all_rsrp])
     serving_rsrp_linear = CapacityModel.dbm_to_linear(max_rsrp)
     interference_linear = total_rsrp_linear - serving_rsrp_linear
     noise_linear = CapacityModel.dbm_to_linear(Config.NOISE_FLOOR_DBM)
-    
+
     sinr_linear = serving_rsrp_linear / (interference_linear + noise_linear + 1e-12)
     sinr_db = 10 * np.log10(sinr_linear + 1e-12)
-    capacity_map = Config.BANDWIDTH_MHZ * np.log2(1 + sinr_linear)
+    # Limitation 3 + 4: use total bandwidth + hardware cap
+    capacity_map = CapacityModel.shannon_capacity(sinr_db)
     
     # Save Heatmaps
     fig, axes = plt.subplots(1, 2, figsize=(20, 8))
@@ -97,11 +102,20 @@ def run_upgraded_pipeline():
         data['demand_ml'] = predicted_demand
     else:
         data['demand_ml'] = data['demand']
-        
+
+    # Limitation 6 Fix: apply temporal demand profile before optimisation.
+    # Scales demand by the multiplier for Config.DESIGN_SCENARIO so that the
+    # network is sized for peak traffic rather than average traffic.
+    data['demand'] = MLDemandModel.apply_temporal_profile(data['demand'], Config.DESIGN_SCENARIO)
+
     # 2. Candidate Site Generation
     candidates = CandidateSiteGenerator.generate_sites(data['demand'], data['cost'], data['elevation'])
-    
+
     # 3. Multi-Objective Optimization
+    # The optimizer automatically uses:
+    #   - Multi-band RSRP cache (Limitation 3)
+    #   - Indoor penetration loss via clutter mask (Limitation 2)
+    #   - Backhaul cap + overload penalty (Limitation 4)
     moga = MultiObjectiveGA(data, candidates)
     pareto_solutions, pareto_fitnesses = moga.run()
     

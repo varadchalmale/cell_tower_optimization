@@ -16,11 +16,48 @@ class Config:
     # --- Network Parameters ---
     TOWER_HEIGHT_M = 30
     USER_HEIGHT_M = 1.5
-    FREQUENCY_MHZ = 1800  # 1.8 GHz
-    BANDWIDTH_MHZ = 20    # 20 MHz channel
+
+    # Limitation 3 Fix: Multi-band model (700 / 1800 / 2600 MHz)
+    # Each band has its own frequency, bandwidth, and TX power.
+    # The optimizer picks the best-RSRP band per pixel (coverage layer = 700 MHz range,
+    # capacity layer = carrier aggregation across all bands).
+    BANDS = [
+        {'name': '700MHz',  'freq_mhz': 700,  'bw_mhz': 10, 'tx_power_dbm': 46},
+        {'name': '1800MHz', 'freq_mhz': 1800, 'bw_mhz': 20, 'tx_power_dbm': 46},
+        {'name': '2600MHz', 'freq_mhz': 2600, 'bw_mhz': 20, 'tx_power_dbm': 43},
+    ]
+    TOTAL_BANDWIDTH_MHZ = 50  # 10 + 20 + 20 — used for Shannon capacity (carrier aggregation)
+
+    # Legacy single-band parameters kept for backward compatibility
+    FREQUENCY_MHZ = 1800
+    BANDWIDTH_MHZ = 20
+
     TRANSMIT_POWER_DBM = 46
-    NOISE_FLOOR_DBM = -104 # Standard for 20MHz
-    MAX_DISTANCE_KM = 5    # Realistic max range for urban/suburban
+    NOISE_FLOOR_DBM = -104  # Standard for 20 MHz
+    MAX_DISTANCE_KM = 5     # Realistic max range for urban/suburban
+
+    # Limitation 2 Fix: Indoor coverage modelling
+    # ITU-R P.2109 / 3GPP TR 38.901 recommend 15–25 dB penetration loss for
+    # concrete buildings.  18 dB is the standard mid-range value.
+    INDOOR_PENETRATION_LOSS_DB = 18   # applied where clutter (building) density > 0.5
+
+    # Limitation 4 Fix: Tower capacity constraints
+    # Real macro towers are limited by hardware MIMO capacity and backhaul link.
+    MAX_HARDWARE_CAPACITY_GBPS = 2.0  # per-tower radio hardware ceiling
+    MAX_BACKHAUL_CAPACITY_GBPS = 1.0  # per-tower backhaul (fibre/microwave) limit
+    OVERLOAD_PENALTY_WEIGHT    = 0.3  # subtracted from capacity objective per overloaded tower
+
+    # Limitation 6 Fix: Temporal demand profiles
+    # Demand multipliers relative to peak (1.0).  Design scenario selects which
+    # multiplier is applied before optimisation — 'peak' ensures the network
+    # handles worst-case load.
+    TEMPORAL_PROFILES = {
+        'peak':    1.00,   # 08:00–10:00 and 17:00–20:00 weekday
+        'daytime': 0.60,   # 10:00–17:00 business hours
+        'evening': 0.75,   # 20:00–23:00
+        'night':   0.15,   # 23:00–06:00
+    }
+    DESIGN_SCENARIO = 'peak'  # optimise for worst-case traffic
     
     # --- Optimization Parameters ---
     POPULATION_SIZE = 40

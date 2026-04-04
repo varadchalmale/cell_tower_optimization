@@ -74,9 +74,38 @@ class MLDemandModel:
         if not os.path.exists(self.model_path):
             print("Model not found. Please train first or fallback to engineered score.")
             return None
-            
+
         print("Inference: Predicting spatial demand using ML model...")
         X = self.prepare_features(population, clutter, poi_density)
         self.model = joblib.load(self.model_path)
         prediction = self.model.predict(X)
         return prediction.reshape(population.shape)
+
+    @staticmethod
+    def apply_temporal_profile(demand_grid: np.ndarray, scenario: str = None) -> np.ndarray:
+        """
+        Limitation 6 Fix: Scale demand by a time-of-day multiplier.
+
+        Real mobile networks experience significant temporal variation:
+          - Peak hours (morning/evening commute): 100% load
+          - Business hours: ~60% of peak
+          - Evening leisure: ~75% of peak
+          - Night: ~15% of peak
+
+        By default uses Config.DESIGN_SCENARIO ('peak'), which means the
+        optimiser sizes the network for the worst-case traffic load.
+
+        Args:
+            demand_grid: 2-D numpy array of predicted demand values.
+            scenario:    Key from Config.TEMPORAL_PROFILES. Defaults to
+                         Config.DESIGN_SCENARIO when None.
+
+        Returns:
+            Scaled demand grid (same shape as input).
+        """
+        if scenario is None:
+            scenario = Config.DESIGN_SCENARIO
+
+        multiplier = Config.TEMPORAL_PROFILES.get(scenario, 1.0)
+        print(f"[Temporal Demand] Scenario: '{scenario}'  multiplier: x{multiplier:.2f}")
+        return demand_grid * multiplier
