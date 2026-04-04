@@ -24,12 +24,34 @@ class CapacityModel:
         return cls.linear_to_db(sinr_linear)
 
     @staticmethod
-    def shannon_capacity(sinr_db, bandwidth_mhz=Config.BANDWIDTH_MHZ):
+    def shannon_capacity(sinr_db, bandwidth_mhz=None):
         """
         Capacity in Mbps.
+
+        Limitation 3 Fix: defaults to TOTAL_BANDWIDTH_MHZ (carrier aggregation
+        across all bands) instead of the single-band BANDWIDTH_MHZ.
+
+        Limitation 4 Fix: caps result at MAX_HARDWARE_CAPACITY_GBPS so that
+        per-pixel throughput never exceeds what real tower hardware can deliver.
         """
-        sinr_linear = 10**(sinr_db / 10)
-        return bandwidth_mhz * np.log2(1 + sinr_linear)
+        if bandwidth_mhz is None:
+            bandwidth_mhz = Config.TOTAL_BANDWIDTH_MHZ
+        sinr_linear = 10 ** (sinr_db / 10)
+        raw_mbps = bandwidth_mhz * np.log2(1 + sinr_linear)
+        # Hardware cap: convert Gbps ceiling to Mbps for comparison
+        hw_cap_mbps = Config.MAX_HARDWARE_CAPACITY_GBPS * 1000
+        return np.minimum(raw_mbps, hw_cap_mbps)
+
+    @classmethod
+    def apply_backhaul_cap(cls, per_cell_capacity_mbps: dict) -> dict:
+        """
+        Limitation 4 Fix: apply per-tower backhaul limit.
+
+        per_cell_capacity_mbps: {cell_id -> total_capacity_mbps}
+        Returns the same dict with values capped at MAX_BACKHAUL_CAPACITY_GBPS.
+        """
+        cap_mbps = Config.MAX_BACKHAUL_CAPACITY_GBPS * 1000
+        return {cell_id: min(cap_mbps, val) for cell_id, val in per_cell_capacity_mbps.items()}
 
     @classmethod
     def calculate_cell_load(cls, user_demand_map, serving_indices, capacity_map):

@@ -4,26 +4,38 @@ project:
   crs: "EPSG:32644"  # UTM Zone 44N for Nagpur region
 
 optimization:
-  num_towers: 50
-  grid_resolution: 150  # meters
-  population_per_user: 10 # 1 out of 10 people is an active user at peak
-  traffic_per_user_mbps: 2.5 # Minimum demand per active user
-  min_tower_distance: 300 # meters
+  num_towers: 100             # Phase 1 NSGA-II macro towers
+  grid_resolution: 750        # metres — 750m for full district (~17,650 grid points)
+  population_per_user: 10     # 1 out of 10 people is an active user at peak
+  traffic_per_user_mbps: 2.5  # minimum demand per active user
+  min_tower_distance: 1500    # metres — larger spacing for 750m grid
+  candidate_pool_size: 800    # 3-tier candidate pool across full district
+  coverage_rsrp_threshold_dbm: -110  # outdoor RSRP coverage threshold
+  shadow_fading_margin_db: 8  # log-normal fading margin for 95% location probability
+
+gap_filling:
+  enabled: true
+  max_additional_towers: 80
+  min_uncovered_pop_fraction: 0.001
 
 rf_params:
-  frequency_mhz: 2100
+  frequency_mhz: 1800        # Band 3 (Airtel India primary 4G band)
   bandwidth_mhz: 20
-  transmit_power_dbm: 43 # 20W
-  antenna_height_m: 30
+  transmit_power_dbm: 46     # 40W macro eNodeB (Airtel spec)
+  antenna_height_m: 35       # typical Indian macro GBT
+  antenna_gain_dbi: 18       # 3-sector panel antenna
   receiver_height_m: 1.5
-  propagation_model: "COST231" # either "COST231" or "3GPP_UMa"
+  propagation_model: "COST231"
 
 nsga2:
-  pop_size: 100
-  n_gen: 50
+  pop_size: 150
+  n_gen: 100
+  coverage_weight: 0.5
+  capacity_weight: 0.3
+  cost_weight: 0.2
 
 paths:
-  boundary_shp: "Data/raw/gadm41_IND_2.shp"
+  boundary_shp: "Data/raw/Boundaries/gadm41_IND_2.shp"
   dem_tif: "Data/raw/srtm_dem.tif"
   pop_tif: "Data/raw/population.tif"
   airtel_coverage: "Data/raw/airtel_coverage.shp"

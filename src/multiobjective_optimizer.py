@@ -14,15 +14,24 @@ class MultiObjectiveGA:
         self.height, self.width = data['demand'].shape
         self.population = self._initialize_population()
         self.history = {'fitness': [], 'pareto': []}
-        
-        # Precompute distance matrices for all candidates to all pixels (Optimization)
-        print("Precomputing distance tensors for candidate sites...")
+
+        # Limitation 2: build boolean indoor mask from clutter layer
+        clutter = data.get('clutter')
+        if clutter is not None:
+            self.indoor_mask = clutter > 0.5
+        else:
+            self.indoor_mask = None
+
+        # Precompute RSRP cache — now uses multiband model (Limitation 3)
+        # and applies indoor penetration loss where buildings exist (Limitation 2).
+        print("Precomputing multi-band distance tensors for candidate sites...")
         yy, xx = np.mgrid[0:self.height, 0:self.width]
         self.candidate_rsrp_cache = []
-        for y, x in tqdm(self.candidates, desc="Precomputing Propagation"):
+        for y, x in tqdm(self.candidates, desc="Precomputing Propagation (multi-band)"):
             dist_km = np.sqrt((xx - x)**2 + (yy - y)**2) * Config.GRID_RESOLUTION_M / 1000.0
-            rsrp = PropagationModel.calculate_rsrp(dist_km)
-            self.candidate_rsrp_cache.append(rsrp)
+            # calculate_rsrp_multiband returns best RSRP across all bands
+            best_rsrp, _ = PropagationModel.calculate_rsrp_multiband(dist_km, self.indoor_mask)
+            self.candidate_rsrp_cache.append(best_rsrp)
         self.candidate_rsrp_cache = np.array(self.candidate_rsrp_cache)
 
     def _initialize_population(self):
@@ -51,28 +60,46 @@ class MultiObjectiveGA:
         # 3. Capacity (SINR based)
         # For each pixel, serving tower is one with max RSRP
         serving_tower_idx_local = np.argmax(all_rsrp, axis=0)
-        
+
         # Interference Calculation
         total_rsrp_linear = np.sum(CapacityModel.dbm_to_linear(all_rsrp), axis=0)
         serving_rsrp_linear = CapacityModel.dbm_to_linear(max_rsrp)
         interference_linear = total_rsrp_linear - serving_rsrp_linear
-        
+
         noise_linear = CapacityModel.dbm_to_linear(Config.NOISE_FLOOR_DBM)
         sinr_linear = serving_rsrp_linear / (interference_linear + noise_linear + 1e-12)
-        
-        # Shannon Capacity (bits/s/Hz) * Bandwidth
-        capacity_map = Config.BANDWIDTH_MHZ * np.log2(1 + sinr_linear)
-        
-        # Load Analysis & Penalization
-        total_capacity_gbps = np.sum(capacity_map[covered_mask]) / 1000.0 # Aggregated
-        
-        # Cell Load Penalty
-        cell_loads = CapacityModel.calculate_cell_load(self.data['demand'], serving_tower_idx_local, capacity_map)
+        sinr_db = CapacityModel.linear_to_db(sinr_linear)
+
+        # Limitation 3 + 4: capacity uses TOTAL_BANDWIDTH_MHZ (carrier aggregation)
+        # and is capped by MAX_HARDWARE_CAPACITY_GBPS via CapacityModel.shannon_capacity()
+        capacity_map = CapacityModel.shannon_capacity(sinr_db)  # Mbps per pixel
+
+        # Limitation 4: aggregate per-cell and apply backhaul cap
+        unique_cells = np.unique(serving_tower_idx_local)
+        per_cell_capacity = {}
+        for cell_id in unique_cells:
+            if cell_id < 0:
+                continue
+            cell_mask = (serving_tower_idx_local == cell_id) & covered_mask
+            per_cell_capacity[int(cell_id)] = float(np.sum(capacity_map[cell_mask]))
+
+        per_cell_capacity = CapacityModel.apply_backhaul_cap(per_cell_capacity)
+        total_capacity_gbps = sum(per_cell_capacity.values()) / 1000.0
+
+        # Cell Load Penalty (Limitation 4: overload = demand > backhaul-capped capacity)
+        cell_loads = CapacityModel.calculate_cell_load(
+            self.data['demand'], serving_tower_idx_local, capacity_map
+        )
         load_penalty = 0
+        overloaded = 0
         for cell_idx, load in cell_loads.items():
-            if load > 1.2: # Overloaded
-                load_penalty += (load - 1.2) * Config.LOAD_PENALTY_WEIGHT
-        
+            if load > 1.0:
+                load_penalty += (load - 1.0) * Config.LOAD_PENALTY_WEIGHT
+                overloaded += 1
+        overload_fraction = overloaded / max(len(cell_loads), 1)
+        # Extra penalty for fraction of overloaded towers (Limitation 4)
+        load_penalty += overload_fraction * Config.OVERLOAD_PENALTY_WEIGHT
+
         capacity_obj = (total_capacity_gbps / (Config.NUM_TOWERS * 0.5)) - load_penalty
         
         # 4. Cost Objective

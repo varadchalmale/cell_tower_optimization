@@ -1,3 +1,10 @@
+"""
+Download Airtel 4G coverage map for Nagpur district via ArcGIS REST API.
+
+Uses the full district bounding box (~78.25°E to 79.66°E, 20.58°N to 21.72°N)
+rather than just central Nagpur.
+"""
+
 import requests
 import io
 import os
@@ -7,65 +14,60 @@ import rasterio
 from rasterio.features import shapes
 from PIL import Image
 
+
 def download_airtel_coverage(out_path):
-    print("Fetching Airtel 4G Coverage Image Data...")
-    
-    # Nagpur rough proxy bounds 
-    lat, lon = 21.1458, 79.0882
-    delta = 0.05 
-    xmin, ymin = lon - delta, lat - delta
-    xmax, ymax = lon + delta, lat + delta
-    
+    print("  Fetching Airtel 4G coverage for Nagpur district...")
+
+    # Full district bounding box (from GADM Nagpur boundary)
+    xmin, ymin = 78.25, 20.58
+    xmax, ymax = 79.66, 21.72
+
     url = "https://digi-api.airtel.in/arcgis/rest/services/AirtelGIS/Coverage4g/MapServer/export"
     params = {
         "bbox": f"{xmin},{ymin},{xmax},{ymax}",
         "bboxSR": "4326",
         "imageSR": "4326",
-        "size": "500,500",
+        "size": "1000,1000",
         "format": "png",
         "transparent": "true",
-        "f": "image" # Crucial: stream the image directly instead of JSON URL
+        "f": "image",
     }
 
     try:
-        # Request Map Image directly
-        response = requests.get(url, params=params, verify=False)
+        response = requests.get(url, params=params, verify=False, timeout=30)
         response.raise_for_status()
-        
+
         img = Image.open(io.BytesIO(response.content)).convert("RGBA")
         img_array = np.array(img)
-        
-        # Alpha channel > 0 means covered
-        mask = img_array[:, :, 3] > 0
-            
-        mask = mask.astype(np.uint8)
-        
-        # Invert latitude since Image (0,0) is top-left, but Map (0,0) is bottom-left usually
-        # The affine transform expects upper left: xmin, ymax
-        transform = rasterio.transform.from_bounds(xmin, ymin, xmax, ymax, 500, 500)
-        
-        results = (
+        mask = (img_array[:, :, 3] > 0).astype(np.uint8)
+
+        transform = rasterio.transform.from_bounds(xmin, ymin, xmax, ymax, 1000, 1000)
+        results = [
             {"properties": {"coverage": v}, "geometry": s}
-            for i, (s, v) in enumerate(shapes(mask, mask=mask, transform=transform))
+            for s, v in shapes(mask, mask=mask, transform=transform)
             if v == 1
-        )
-        
-        geoms = list(results)
-        if not geoms:
-            print("No coverage features extracted from image. Generating dummy polygon fallback.")
-            geoms = [{"properties": {"coverage": 1}, "geometry": {"type": "Polygon", "coordinates": [[[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax], [xmin, ymin]]]}}]
-            
-        gdf = gpd.GeoDataFrame.from_features(geoms, crs="EPSG:4326")
+        ]
+
+        if not results:
+            print("  No coverage features extracted. Using district-wide fallback.")
+            results = [{"properties": {"coverage": 1}, "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[xmin, ymin], [xmax, ymin], [xmax, ymax],
+                                 [xmin, ymax], [xmin, ymin]]]
+            }}]
+
+        gdf = gpd.GeoDataFrame.from_features(results, crs="EPSG:4326")
         gdf = gdf.to_crs(epsg=32644)
-        
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         gdf.to_file(out_path)
-        print(f"Successfully saved Actual Airtel Coverage Shapefile to {out_path}.")
+        print(f"  Saved Airtel coverage shapefile to {out_path}")
         return True
-        
+
     except Exception as e:
-        print(f"Error extracting Airtel coverage: {e}")
+        print(f"  Error downloading Airtel coverage: {e}")
         return False
+
 
 if __name__ == "__main__":
     download_airtel_coverage("Data/raw/airtel_coverage.shp")

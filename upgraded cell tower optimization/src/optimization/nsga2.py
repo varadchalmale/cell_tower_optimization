@@ -1,158 +1,121 @@
+"""
+NSGA-II multi-objective optimiser for macro tower placement.
+
+Objectives:
+  1. Maximise population coverage fraction (RSRP >= threshold)
+  2. Maximise aggregate network capacity (Shannon throughput)
+  3. Minimise deployment cost (road proximity + land cost proxy)
+"""
+
 import numpy as np
 import pandas as pd
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
-from src.models.propagation import PropagationModel
-from src.models.capacity import CapacityModel
+from src.models.propagation import vectorized_rsrp_matrix
+
 
 class CellTowerPlanningProblem(ElementwiseProblem):
     def __init__(self, candidates_df, grid_df, config):
-        n_towers = config['optimization']['num_towers']
-        super().__init__(n_var=n_towers,
-                         n_obj=3,       
-                         n_ieq_constr=0,
-                         xl=0,          
-                         xu=len(candidates_df) - 1) 
+        n_towers = config["optimization"]["num_towers"]
+        super().__init__(
+            n_var=n_towers,
+            n_obj=3,
+            n_ieq_constr=0,
+            xl=0,
+            xu=len(candidates_df) - 1,
+        )
         self.candidates = candidates_df
         self.grid = grid_df
         self.config = config
-        self.prop_model = PropagationModel(config)
-        self.cap_model = CapacityModel(config)
         self.n_towers = n_towers
-        
-        print("Precomputing pathloss matrix for candidates...")
-        # Precompute path loss from every candidate to every grid point
-        # rows: grid points, columns: candidates
-        self.candidate_rsrp = np.zeros((len(grid_df), len(candidates_df)))
-        
-        fc = self.config['rf_params']['frequency_mhz']
-        tx_power = self.config['rf_params']['transmit_power_dbm']
-        ht = self.config['rf_params']['antenna_height_m']
-        hr = self.config['rf_params']['receiver_height_m']
-        
-        for i, row in candidates_df.iterrows():
-            d_x = grid_df['x'].values - row['x']
-            d_y = grid_df['y'].values - row['y']
-            d_km = np.sqrt(d_x**2 + d_y**2) / 1000.0
-            d_km = np.maximum(d_km, 0.001)
-            
-            # Simplified vector pathloss calculation (COST231 logic)
-            ahr = 3.2 * (np.log10(11.75 * hr))**2 - 4.97
-            # Assuming urban cm=3
-            pl = (46.3 + 33.9 * np.log10(fc) - 13.82 * np.log10(ht) - ahr + (44.9 - 6.55 * np.log10(ht)) * np.log10(d_km) + 3)
-            pl = np.maximum(38.0, pl)
-            self.candidate_rsrp[:, i] = tx_power + 15.0 - pl
+        self.rsrp_threshold = config["optimization"].get("coverage_rsrp_threshold_dbm", -110)
+        self.pop_total = grid_df["population"].values.sum()
+
+        print("  Precomputing RSRP matrix (env-aware, with fading margin)...")
+        self.candidate_rsrp = vectorized_rsrp_matrix(grid_df, candidates_df, config)
+        print(f"  Matrix shape: {self.candidate_rsrp.shape}  "
+              f"({self.candidate_rsrp.nbytes / 1e6:.1f} MB)")
 
     def _evaluate(self, x, out, *args, **kwargs):
-        # Decode variables into candidate indices
-        selected_indices = np.round(x).astype(int)
-        
-        # Penalize if repeated candidates selected
-        unique_towers = np.unique(selected_indices)
-        if len(unique_towers) < self.n_towers:
-            out["F"] = [1e6, 1e6, 1e6]  
+        selected = np.round(x).astype(int)
+        if len(np.unique(selected)) < self.n_towers:
+            out["F"] = [1e6, 1e6, 1e6]
             return
 
-        rsrp_active = self.candidate_rsrp[:, selected_indices]
-        
-        # Best server per grid point
-        best_server_idx = np.argmax(rsrp_active, axis=1)
+        rsrp_active = self.candidate_rsrp[:, selected]
         best_rsrp = np.max(rsrp_active, axis=1)
-        
-        # Binary assignment matrix (grid_size x n_towers)
-        assignment_matrix = np.zeros((len(self.grid), self.n_towers))
-        assignment_matrix[np.arange(len(self.grid)), best_server_idx] = 1
 
-        # Approximation of SINR
-        interference_rsrp = np.sum(10**(rsrp_active/10.0), axis=1) - 10**(best_rsrp/10.0)
-        noise = 10**(-104/10.0)
-        sinr_lin = 10**(best_rsrp/10.0) / (interference_rsrp + noise + 1e-12)
-        sinr_db = 10 * np.log10(sinr_lin + 1e-12)
-        
-        # Convert SINR to spectral efficiency and throughput
+        # --- Objective 1: population coverage fraction ---
+        covered = (best_rsrp >= self.rsrp_threshold).astype(np.float32)
+        pop = self.grid["population"].values
+        obj1 = -np.sum(pop * covered) / (self.pop_total + 1e-9)
+
+        # --- Objective 2: aggregate capacity ---
+        interference = np.sum(10 ** (rsrp_active / 10.0), axis=1) - 10 ** (best_rsrp / 10.0)
+        noise = 10 ** (-104 / 10.0)
+        sinr_lin = 10 ** (best_rsrp / 10.0) / (interference + noise + 1e-12)
         se = 0.6 * np.log2(1 + sinr_lin)
-        throughput = se * self.config['rf_params']['bandwidth_mhz']
-        
-        # Demand and load
-        demand = self.grid['predicted_traffic_mbps'].values
-        # Load of a cell = Sum_{users in cell} (demand / user_peak_throughput)
-        cell_loads = np.zeros(self.n_towers)
-        sat_demand = np.zeros(len(self.grid))
-        
-        for c in range(self.n_towers):
-            mask = assignment_matrix[:, c] == 1
-            if not np.any(mask):
-                continue
-            tput_c = np.maximum(1e-3, throughput[mask])
-            req_fractions = demand[mask] / tput_c
-            load = np.sum(req_fractions)
-            cell_loads[c] = load
-            
-            if load <= 1.0:
-                sat_demand[mask] = demand[mask]
-            else:
-                sat_demand[mask] = demand[mask] / load
+        throughput = se * self.config["rf_params"]["bandwidth_mhz"]
+        obj2 = -np.sum(throughput)
 
-        # Obj 1: Maximize satisfied demand weighted by population
-        pop = self.grid['population'].values
-        sat_ratio = sat_demand / (demand + 1e-9)
-        obj1 = -np.sum(sat_ratio * pop)  # maximize -> negative
+        # --- Objective 3: deployment cost ---
+        cands = self.candidates.iloc[selected]
+        road_pen = 1.0 / (cands["road_density"].values + 0.1)
+        land_pen = cands["building_density"].values * 10
+        obj3 = np.sum(road_pen + land_pen)
 
-        # Obj 2: Maximize overall usable capacity
-        obj2 = -np.sum(throughput) # maximize sum of user peak throughputs
-
-        # Obj 3: Minimize deployment cost
-        cands = self.candidates.iloc[selected_indices]
-        road_penalties = 1.0 / (cands['road_density'].values + 0.1)
-        land_penalties = cands['building_density'].values * 10
-        obj3 = np.sum(road_penalties + land_penalties)
-        
         out["F"] = [obj1, obj2, obj3]
+
 
 class MultiObjectiveOptimizer:
     def __init__(self, config):
         self.config = config
-        
+
     def run_optimization(self, candidates_df, grid_df):
-        print(f"Starting NSGA-II optimization with {len(candidates_df)} candidates for {self.config['optimization']['num_towers']} towers...")
-        
-        problem = CellTowerPlanningProblem(candidates_df, grid_df, self.config)
-        
-        from pymoo.algorithms.moo.nsga2 import NSGA2
-        from pymoo.optimize import minimize
+        cfg = self.config
+        n_towers = cfg["optimization"]["num_towers"]
+        print(f"  Starting NSGA-II: {len(candidates_df)} candidates -> {n_towers} towers")
+
+        problem = CellTowerPlanningProblem(candidates_df, grid_df, cfg)
+
         from pymoo.operators.sampling.rnd import FloatRandomSampling
         from pymoo.operators.crossover.sbx import SBX
         from pymoo.operators.mutation.pm import PM
-        
+
         algorithm = NSGA2(
-            pop_size=self.config['nsga2']['pop_size'],
+            pop_size=cfg["nsga2"]["pop_size"],
             sampling=FloatRandomSampling(),
             crossover=SBX(prob=0.9, eta=15),
             mutation=PM(eta=20),
-            eliminate_duplicates=True
+            eliminate_duplicates=True,
         )
-        
-        res = minimize(problem,
-                       algorithm,
-                       ("n_gen", self.config['nsga2']['n_gen']),
-                       seed=self.config['project']['seed'],
-                       verbose=True)
-        
-        print(f"Optimization finished. Found {len(res.F)} Pareto optimal solutions.")
-        
-        # Get the best compromise solution (e.g., minimum distance to ideal point)
+
+        res = minimize(
+            problem, algorithm,
+            ("n_gen", cfg["nsga2"]["n_gen"]),
+            seed=cfg["project"]["seed"],
+            verbose=True,
+        )
+
+        print(f"  Optimisation done. {len(res.F)} Pareto-optimal solutions.")
+
+        # Weighted compromise selection
         F = res.F
         ideal = F.min(axis=0)
         nadir = F.max(axis=0)
-        normalized_F = (F - ideal) / (nadir - ideal + 1e-9)
-        
-        # Weighted sum of objectives (giving equal priority) to pick one solution
-        weights = np.array([0.4, 0.4, 0.2]) # higher priority to coverage and capacity, less to cost
-        weighted_sum = np.sum(normalized_F * weights, axis=1)
-        best_idx = np.argmin(weighted_sum)
-        
-        best_solution_indices = np.round(res.X[best_idx]).astype(int)
-        best_towers = candidates_df.iloc[best_solution_indices].copy()
-        
+        norm = (F - ideal) / (nadir - ideal + 1e-9)
+        w = np.array([
+            cfg["nsga2"].get("coverage_weight", 0.5),
+            cfg["nsga2"].get("capacity_weight", 0.3),
+            cfg["nsga2"].get("cost_weight", 0.2),
+        ])
+        best_idx = np.argmin(np.sum(norm * w, axis=1))
+
+        indices = np.round(res.X[best_idx]).astype(int)
+        best_towers = candidates_df.iloc[indices].copy()
+        best_towers["tower_source"] = "nsga2_macro"
+
+        phase1_cov = -F[best_idx, 0]
+        print(f"  Phase 1 population coverage: {phase1_cov * 100:.1f}%")
         return res, best_towers
